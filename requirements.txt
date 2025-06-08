@@ -1,7 +1,7 @@
 # first pip install numpy scipy scikit-learn all seperately
 
 
-pandas_datareader
+pandas_datareader>=0.10.0
 # numpy
 #--find-links https://download.pytorch.org/whl/torch_stable.html
 #torch==1.11.0+cu113
@@ -103,7 +103,7 @@ fastapi
 gunicorn
 uvicorn
 # git+https://github.com/amazon-science/chronos-forecasting.git
-chronos-forecasting
+chronos-forecasting>=1.5.2
 scikit-learn>=1.0.0
 
 python-binance
