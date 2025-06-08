@@ -1,24 +1,14 @@
 # first pip install numpy scipy scikit-learn all seperately
 
-
 pandas_datareader>=0.10.0
-# numpy
-#--find-links https://download.pytorch.org/whl/torch_stable.html
-#torch==1.11.0+cu113
-# torch==1.13.0 breaks due to _posthooks
 torch>=2.1.2
-#torchvision==0.10.0+cu111
-
 pandas>=2.0.0
-# scipy
 loguru>=0.7.0
 matplotlib
 neuralforecast
 retry>=0.9.2
 hyperopt
-#neuralprophet
 alpaca-trade-api>=3.0.0
-
 SQLAlchemy
 websocket-client
 py
@@ -32,7 +22,6 @@ wheel
 pip
 tqdm
 optuna
-# scikit-learn
 filelock
 transformers>=4.36.0
 click
@@ -88,23 +77,18 @@ fonttools
 pyparsing
 websockets
 statsmodels
-# cycler
-# kiwisolver
-# sacremoses
-tokenizers #==0.15.2 --only-binary=:all:
-# torchmetrics
-# zipp
-# typer
-#pytorch-forecasting
-# pytorch-forecasting
-#pytorch-lightning
+tokenizers
 alpaca-py>=0.8.0
 fastapi
 gunicorn
 uvicorn
-# git+https://github.com/amazon-science/chronos-forecasting.git
 spaces>=0.1.0
 numpy>=1.24.0
 yfinance>=0.2.0
 plotly>=5.0.0
-git+https://github.com/amazon-science/chronos-forecasting.git
+scikit-learn>=1.0.0
+python-binance
+typer
+diskcache
+anthropic
+gradio>=4.0.0
