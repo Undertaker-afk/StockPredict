@@ -60,9 +60,17 @@ def get_historical_data(symbol: str, timeframe: str = "1d", lookback_days: int =
         ticker = yf.Ticker(symbol)
         df = ticker.history(start=start_date, end=end_date, interval=interval)
         
+        # Get additional info for structured products
+        info = ticker.info
+        df['Market_Cap'] = info.get('marketCap', None)
+        df['Sector'] = info.get('sector', None)
+        df['Industry'] = info.get('industry', None)
+        df['Dividend_Yield'] = info.get('dividendYield', None)
+        
         # Calculate technical indicators
         df['SMA_20'] = df['Close'].rolling(window=20).mean()
         df['SMA_50'] = df['Close'].rolling(window=50).mean()
+        df['SMA_200'] = df['Close'].rolling(window=200).mean()
         df['RSI'] = calculate_rsi(df['Close'])
         df['MACD'], df['MACD_Signal'] = calculate_macd(df['Close'])
         df['BB_Upper'], df['BB_Middle'], df['BB_Lower'] = calculate_bollinger_bands(df['Close'])
@@ -70,6 +78,16 @@ def get_historical_data(symbol: str, timeframe: str = "1d", lookback_days: int =
         # Calculate returns and volatility
         df['Returns'] = df['Close'].pct_change()
         df['Volatility'] = df['Returns'].rolling(window=20).std()
+        df['Annualized_Vol'] = df['Volatility'] * np.sqrt(252)  # Annualized volatility
+        
+        # Calculate drawdown metrics
+        df['Rolling_Max'] = df['Close'].rolling(window=252, min_periods=1).max()
+        df['Drawdown'] = (df['Close'] - df['Rolling_Max']) / df['Rolling_Max']
+        df['Max_Drawdown'] = df['Drawdown'].rolling(window=252, min_periods=1).min()
+        
+        # Calculate liquidity metrics
+        df['Avg_Daily_Volume'] = df['Volume'].rolling(window=20).mean()
+        df['Volume_Volatility'] = df['Volume'].rolling(window=20).std()
         
         # Drop NaN values
         df = df.dropna()
@@ -265,9 +283,9 @@ def calculate_trading_signals(df: pd.DataFrame) -> Dict:
 
 def create_interface():
     """Create the Gradio interface"""
-    with gr.Blocks(title="Stock Analysis and Prediction") as demo:
-        gr.Markdown("# Stock Analysis and Prediction")
-        gr.Markdown("Enter a stock symbol and select parameters to get price forecasts and trading signals.")
+    with gr.Blocks(title="Structured Product Analysis") as demo:
+        gr.Markdown("# Structured Product Analysis")
+        gr.Markdown("Analyze stocks for inclusion in structured financial products with extended time horizons.")
         
         with gr.Row():
             with gr.Column():
@@ -279,10 +297,17 @@ def create_interface():
                 )
                 prediction_days = gr.Slider(
                     minimum=1,
-                    maximum=30,
-                    value=5,
+                    maximum=365,  # Extended to 1 year
+                    value=30,
                     step=1,
                     label="Days to Predict"
+                )
+                lookback_days = gr.Slider(
+                    minimum=365,
+                    maximum=3650,  # 10 years of history
+                    value=365,
+                    step=30,
+                    label="Historical Lookback (Days)"
                 )
                 strategy = gr.Dropdown(
                     choices=["chronos", "technical"],
@@ -295,10 +320,56 @@ def create_interface():
                 plot = gr.Plot(label="Analysis and Prediction")
                 signals = gr.JSON(label="Trading Signals")
         
+        with gr.Row():
+            with gr.Column():
+                gr.Markdown("### Structured Product Metrics")
+                metrics = gr.JSON(label="Product Metrics")
+                
+                gr.Markdown("### Risk Analysis")
+                risk_metrics = gr.JSON(label="Risk Metrics")
+                
+                gr.Markdown("### Sector Analysis")
+                sector_metrics = gr.JSON(label="Sector Metrics")
+        
+        def analyze_stock(symbol, timeframe, prediction_days, lookback_days, strategy):
+            signals, fig = make_prediction(symbol, timeframe, prediction_days, strategy)
+            
+            # Get historical data for additional metrics
+            df = get_historical_data(symbol, timeframe, lookback_days)
+            
+            # Calculate structured product metrics
+            product_metrics = {
+                "Market_Cap": df['Market_Cap'].iloc[-1],
+                "Sector": df['Sector'].iloc[-1],
+                "Industry": df['Industry'].iloc[-1],
+                "Dividend_Yield": df['Dividend_Yield'].iloc[-1],
+                "Avg_Daily_Volume": df['Avg_Daily_Volume'].iloc[-1],
+                "Volume_Volatility": df['Volume_Volatility'].iloc[-1]
+            }
+            
+            # Calculate risk metrics
+            risk_metrics = {
+                "Annualized_Volatility": df['Annualized_Vol'].iloc[-1],
+                "Max_Drawdown": df['Max_Drawdown'].iloc[-1],
+                "Current_Drawdown": df['Drawdown'].iloc[-1],
+                "Sharpe_Ratio": (df['Returns'].mean() * 252) / (df['Returns'].std() * np.sqrt(252)),
+                "Sortino_Ratio": (df['Returns'].mean() * 252) / (df['Returns'][df['Returns'] < 0].std() * np.sqrt(252))
+            }
+            
+            # Calculate sector metrics
+            sector_metrics = {
+                "Sector": df['Sector'].iloc[-1],
+                "Industry": df['Industry'].iloc[-1],
+                "Market_Cap_Rank": "Large" if df['Market_Cap'].iloc[-1] > 1e10 else "Mid" if df['Market_Cap'].iloc[-1] > 1e9 else "Small",
+                "Liquidity_Score": "High" if df['Avg_Daily_Volume'].iloc[-1] > 1e6 else "Medium" if df['Avg_Daily_Volume'].iloc[-1] > 1e5 else "Low"
+            }
+            
+            return signals, fig, product_metrics, risk_metrics, sector_metrics
+        
         predict_btn.click(
-            fn=make_prediction,
-            inputs=[symbol, timeframe, prediction_days, strategy],
-            outputs=[signals, plot]
+            fn=analyze_stock,
+            inputs=[symbol, timeframe, prediction_days, lookback_days, strategy],
+            outputs=[signals, plot, metrics, risk_metrics, sector_metrics]
         )
     
     return demo
