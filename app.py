@@ -104,7 +104,7 @@ def calculate_bollinger_bands(prices: pd.Series, period: int = 20, std_dev: int 
     return upper_band, middle_band, lower_band
 
 @spaces.GPU
-def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5, strategy: str = "chronos") -> Dict:
+def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5, strategy: str = "chronos") -> Tuple[Dict, go.Figure]:
     """
     Make prediction using selected strategy.
     
@@ -115,7 +115,7 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
         strategy (str): Prediction strategy to use
     
     Returns:
-        dict: Prediction results and visualization
+        Tuple[Dict, go.Figure]: Trading signals and visualization plot
     """
     try:
         # Get historical data
@@ -133,7 +133,7 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                 prediction = pipe.predict(
                     context=context,
                     prediction_length=prediction_days,
-                    num_samples=100  # Increased samples for better uncertainty estimation
+                    num_samples=100
                 ).detach().cpu().numpy()
             
             mean_pred = prediction.mean(axis=0)
@@ -228,14 +228,15 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
         # Calculate trading signals
         signals = calculate_trading_signals(df)
         
-        return {
+        # Add prediction information to signals
+        signals.update({
             "symbol": symbol,
             "prediction": mean_pred.tolist(),
             "confidence": std_pred.tolist(),
-            "dates": pred_dates.strftime('%Y-%m-%d').tolist(),
-            "plot": fig,
-            "signals": signals
-        }
+            "dates": pred_dates.strftime('%Y-%m-%d').tolist()
+        })
+        
+        return signals, fig
         
     except Exception as e:
         raise Exception(f"Prediction error: {str(e)}")
