@@ -57,13 +57,19 @@ def get_historical_data(symbol: str, timeframe: str = "1d", lookback_days: int =
         pd.DataFrame: Historical data with OHLCV and technical indicators
     """
     try:
-        # Map timeframe to yfinance interval
+        # Map timeframe to yfinance interval and adjust lookback period
         tf_map = {
             "1d": "1d",
             "1h": "1h",
             "15m": "15m"
         }
         interval = tf_map.get(timeframe, "1d")
+        
+        # Adjust lookback period based on timeframe
+        if timeframe == "1h":
+            lookback_days = min(lookback_days, 30)  # Yahoo limits hourly data to 30 days
+        elif timeframe == "15m":
+            lookback_days = min(lookback_days, 5)   # Yahoo limits 15m data to 5 days
         
         # Calculate date range
         end_date = datetime.now()
@@ -73,6 +79,9 @@ def get_historical_data(symbol: str, timeframe: str = "1d", lookback_days: int =
         ticker = yf.Ticker(symbol)
         df = ticker.history(start=start_date, end=end_date, interval=interval)
         
+        if df.empty:
+            raise Exception(f"No data available for {symbol} in {timeframe} timeframe")
+        
         # Get additional info for structured products
         info = ticker.info
         df['Market_Cap'] = info.get('marketCap', None)
@@ -80,30 +89,49 @@ def get_historical_data(symbol: str, timeframe: str = "1d", lookback_days: int =
         df['Industry'] = info.get('industry', None)
         df['Dividend_Yield'] = info.get('dividendYield', None)
         
-        # Calculate technical indicators
-        df['SMA_20'] = df['Close'].rolling(window=20).mean()
-        df['SMA_50'] = df['Close'].rolling(window=50).mean()
-        df['SMA_200'] = df['Close'].rolling(window=200).mean()
+        # Calculate technical indicators with adjusted windows based on timeframe
+        if timeframe == "1d":
+            sma_window_20 = 20
+            sma_window_50 = 50
+            sma_window_200 = 200
+            vol_window = 20
+        elif timeframe == "1h":
+            sma_window_20 = 20 * 6  # 5 trading days
+            sma_window_50 = 50 * 6  # ~10 trading days
+            sma_window_200 = 200 * 6  # ~40 trading days
+            vol_window = 20 * 6
+        else:  # 15m
+            sma_window_20 = 20 * 24  # 5 trading days
+            sma_window_50 = 50 * 24  # ~10 trading days
+            sma_window_200 = 200 * 24  # ~40 trading days
+            vol_window = 20 * 24
+        
+        df['SMA_20'] = df['Close'].rolling(window=sma_window_20).mean()
+        df['SMA_50'] = df['Close'].rolling(window=sma_window_50).mean()
+        df['SMA_200'] = df['Close'].rolling(window=sma_window_200).mean()
         df['RSI'] = calculate_rsi(df['Close'])
         df['MACD'], df['MACD_Signal'] = calculate_macd(df['Close'])
         df['BB_Upper'], df['BB_Middle'], df['BB_Lower'] = calculate_bollinger_bands(df['Close'])
         
         # Calculate returns and volatility
         df['Returns'] = df['Close'].pct_change()
-        df['Volatility'] = df['Returns'].rolling(window=20).std()
-        df['Annualized_Vol'] = df['Volatility'] * np.sqrt(252)  # Annualized volatility
+        df['Volatility'] = df['Returns'].rolling(window=vol_window).std()
+        df['Annualized_Vol'] = df['Volatility'] * np.sqrt(252)
         
         # Calculate drawdown metrics
-        df['Rolling_Max'] = df['Close'].rolling(window=252, min_periods=1).max()
+        df['Rolling_Max'] = df['Close'].rolling(window=len(df), min_periods=1).max()
         df['Drawdown'] = (df['Close'] - df['Rolling_Max']) / df['Rolling_Max']
-        df['Max_Drawdown'] = df['Drawdown'].rolling(window=252, min_periods=1).min()
+        df['Max_Drawdown'] = df['Drawdown'].rolling(window=len(df), min_periods=1).min()
         
         # Calculate liquidity metrics
-        df['Avg_Daily_Volume'] = df['Volume'].rolling(window=20).mean()
-        df['Volume_Volatility'] = df['Volume'].rolling(window=20).std()
+        df['Avg_Daily_Volume'] = df['Volume'].rolling(window=vol_window).mean()
+        df['Volume_Volatility'] = df['Volume'].rolling(window=vol_window).std()
         
         # Drop NaN values
         df = df.dropna()
+        
+        if len(df) < 2:
+            raise Exception(f"Insufficient data points for {symbol} in {timeframe} timeframe")
         
         return df
         
@@ -157,6 +185,14 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                 # Prepare data for Chronos
                 returns = df['Returns'].values
                 normalized_returns = (returns - returns.mean()) / returns.std()
+                
+                # Ensure we have enough data points
+                min_data_points = 64  # Minimum required by Chronos
+                if len(normalized_returns) < min_data_points:
+                    # Pad the data with the last value
+                    padding = np.full(min_data_points - len(normalized_returns), normalized_returns[-1])
+                    normalized_returns = np.concatenate([padding, normalized_returns])
+                
                 context = torch.tensor(normalized_returns.reshape(-1, 1), dtype=torch.float32)
                 
                 # Make prediction with GPU acceleration
@@ -176,7 +212,10 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                 elif timeframe == "1h":
                     actual_prediction_length = min(prediction_days * 24, max_prediction_length)
                 else:  # 15m
-                    actual_prediction_length = min(prediction_days * 96, max_prediction_length)  # 96 intervals per day
+                    actual_prediction_length = min(prediction_days * 96, max_prediction_length)
+                
+                # Ensure prediction length is at least 1
+                actual_prediction_length = max(1, actual_prediction_length)
                 
                 with torch.inference_mode():
                     prediction = pipe.predict(
