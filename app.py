@@ -7,18 +7,20 @@ import torch
 from chronos import BaseChronosPipeline
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import spaces
 
 # Initialize Chronos pipeline
 pipeline = None
 
+@spaces.GPU
 def load_pipeline():
-    """Load the Chronos model with CPU configuration"""
+    """Load the Chronos model with GPU configuration"""
     global pipeline
     if pipeline is None:
         pipeline = BaseChronosPipeline.from_pretrained(
             "amazon/chronos-bolt-base",
-            device_map="cpu",  # Force CPU usage
-            torch_dtype=torch.float32  # Use float32 for CPU
+            device_map="auto",  # Let the model use GPU if available
+            torch_dtype=torch.float16  # Use float16 for better GPU performance
         )
         pipeline.model = pipeline.model.eval()
     return pipeline
@@ -72,6 +74,7 @@ def get_historical_data(symbol: str, timeframe: str = "1d") -> np.ndarray:
     except Exception as e:
         raise Exception(f"Error fetching historical data for {symbol}: {str(e)}")
 
+@spaces.GPU
 def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5):
     """
     Make prediction using Chronos model.
@@ -91,8 +94,8 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
         # Get historical data
         historical_data = get_historical_data(symbol, timeframe)
         
-        # Convert to tensor
-        context = torch.tensor(historical_data, dtype=torch.float32)
+        # Convert to tensor and move to GPU
+        context = torch.tensor(historical_data, dtype=torch.float32).to(pipe.model.device)
         
         # Make prediction
         with torch.inference_mode():
