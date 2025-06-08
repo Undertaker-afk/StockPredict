@@ -13,6 +13,7 @@ from typing import Dict, List, Tuple, Optional
 import json
 import spaces
 import gc
+import pytz
 
 # Initialize global variables
 pipeline = None
@@ -44,6 +45,31 @@ def load_pipeline():
         print(f"Error loading pipeline: {str(e)}")
         raise RuntimeError(f"Failed to load model: {str(e)}")
 
+def is_market_open() -> bool:
+    """Check if the market is currently open"""
+    now = datetime.now()
+    # Check if it's a weekday (0 = Monday, 6 = Sunday)
+    if now.weekday() >= 5:  # Saturday or Sunday
+        return False
+    
+    # Check if it's during market hours (9:30 AM - 4:00 PM ET)
+    et_time = now.astimezone(pytz.timezone('US/Eastern'))
+    market_open = et_time.replace(hour=9, minute=30, second=0, microsecond=0)
+    market_close = et_time.replace(hour=16, minute=0, second=0, microsecond=0)
+    
+    return market_open <= et_time <= market_close
+
+def get_next_trading_day() -> datetime:
+    """Get the next trading day"""
+    now = datetime.now()
+    next_day = now + timedelta(days=1)
+    
+    # Skip weekends
+    while next_day.weekday() >= 5:  # Saturday or Sunday
+        next_day += timedelta(days=1)
+    
+    return next_day
+
 def get_historical_data(symbol: str, timeframe: str = "1d", lookback_days: int = 365) -> pd.DataFrame:
     """
     Fetch historical data using yfinance.
@@ -57,6 +83,11 @@ def get_historical_data(symbol: str, timeframe: str = "1d", lookback_days: int =
         pd.DataFrame: Historical data with OHLCV and technical indicators
     """
     try:
+        # Check if market is open for intraday data
+        if timeframe in ["1h", "15m"] and not is_market_open():
+            next_trading_day = get_next_trading_day()
+            raise Exception(f"Market is currently closed. Next trading day is {next_trading_day.strftime('%Y-%m-%d')}")
+        
         # Map timeframe to yfinance interval and adjust lookback period
         tf_map = {
             "1d": "1d",
@@ -379,6 +410,14 @@ def create_interface():
         gr.Markdown("# Structured Product Analysis")
         gr.Markdown("Analyze stocks for inclusion in structured financial products with extended time horizons.")
         
+        # Add market status message
+        market_status = "Market is currently closed" if not is_market_open() else "Market is currently open"
+        next_trading_day = get_next_trading_day()
+        gr.Markdown(f"""
+        ### Market Status: {market_status}
+        Next trading day: {next_trading_day.strftime('%Y-%m-%d')}
+        """)
+        
         with gr.Tabs() as tabs:
             # Daily Analysis Tab
             with gr.TabItem("Daily Analysis"):
@@ -408,10 +447,11 @@ def create_interface():
                     
                     with gr.Column():
                         daily_plot = gr.Plot(label="Analysis and Prediction")
-                        daily_signals = gr.JSON(label="Trading Signals")
                 
                 with gr.Row():
                     with gr.Column():
+
+
                         gr.Markdown("### Structured Product Metrics")
                         daily_metrics = gr.JSON(label="Product Metrics")
                         
@@ -420,6 +460,9 @@ def create_interface():
                         
                         gr.Markdown("### Sector Analysis")
                         daily_sector_metrics = gr.JSON(label="Sector Metrics")
+
+                        gr.Markdown("### Trading Signals")
+                        daily_signals = gr.JSON(label="Trading Signals")
             
             # Hourly Analysis Tab
             with gr.TabItem("Hourly Analysis"):
@@ -553,7 +596,9 @@ def create_interface():
                 return signals, fig, product_metrics, risk_metrics, sector_metrics
             except Exception as e:
                 error_message = str(e)
-                if "Insufficient data points" in error_message:
+                if "Market is currently closed" in error_message:
+                    error_message = f"{error_message}. Please try again during market hours or use daily timeframe."
+                elif "Insufficient data points" in error_message:
                     error_message = f"Not enough data available for {symbol} in {timeframe} timeframe. Please try a different timeframe or symbol."
                 elif "no price data found" in error_message:
                     error_message = f"No data available for {symbol} in {timeframe} timeframe. Please try a different timeframe or symbol."
