@@ -11,65 +11,96 @@ license: mit
 short_description: Use Amazon Chronos To Predict Stock Prices
 ---
 
-Check out the configuration reference at https://huggingface.co/docs/hub/spaces-config-reference
+# Stock Analysis and Prediction Demo
 
-
-# Stock Price Prediction with Amazon Chronos
-
-A neural network application that uses Amazon's Chronos model for time series forecasting to predict stock prices.
+A comprehensive stock analysis and prediction tool built with Gradio, featuring multiple prediction strategies and technical analysis indicators.
 
 ## Features
 
-- Real-time stock price predictions using Amazon Chronos
-- Interactive visualization of predictions with confidence intervals
-- Support for multiple timeframes (daily, hourly, 15-minute)
-- User-friendly Gradio interface
-- Free stock data using yfinance API
+- **Multiple Prediction Strategies**:
+  - Chronos ML-based prediction
+  - Technical analysis-based prediction
 
-## Hugging Face Spaces Deployment
+- **Technical Indicators**:
+  - RSI (Relative Strength Index)
+  - MACD (Moving Average Convergence Divergence)
+  - Bollinger Bands
+  - Simple Moving Averages (20 and 50-day)
 
-This application is configured to run on Hugging Face Spaces. To deploy:
+- **Trading Signals**:
+  - Buy/Sell recommendations based on multiple indicators
+  - Overall trading signal combining all indicators
+  - Confidence intervals for predictions
 
-1. Create a new Space on Hugging Face
-2. Choose "Docker" as the SDK
-3. Upload all the files to your Space
+- **Interactive Visualizations**:
+  - Price prediction with confidence intervals
+  - Technical indicators overlay
+  - Volume analysis
+  - Historical price trends
 
-## Local Development
+## Installation
 
-To run locally:
-
+1. Clone the repository:
 ```bash
-# Create and activate virtual environment
-python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Run the application
-python app.py
+git clone <repository-url>
+cd stock-prediction
 ```
 
-## Model Details
+2. Create and activate a virtual environment:
+```bash
+python -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+```
 
-The application uses Amazon's Chronos model for time series forecasting. The model is configured to:
-
-- Make predictions for stock prices
-- Calculate confidence intervals
-- Generate interactive visualizations
-- Support multiple prediction horizons
+3. Install dependencies:
+```bash
+pip install -r requirements.txt
+```
 
 ## Usage
 
-1. Enter a stock symbol (e.g., AAPL, GOOGL, MSFT)
-2. Select the desired timeframe (1d, 1h, 15m)
-3. Choose the number of days to predict (1-30)
-4. Click "Make Prediction" to generate forecasts
+1. Start the Gradio demo:
+```bash
+python app.py
+```
 
-The application will display:
-- A plot showing historical prices and predictions
-- Confidence intervals for the predictions
-- A separate plot showing prediction uncertainty
+2. Open your web browser and navigate to the URL shown in the terminal (typically http://localhost:7860)
+
+3. Enter a stock symbol (e.g., AAPL, GOOGL, MSFT) and select your desired parameters:
+   - Timeframe (1d, 1h, 15m)
+   - Number of days to predict
+   - Prediction strategy (Chronos or Technical)
+
+4. Click "Analyze Stock" to get predictions and trading signals
+
+## Prediction Strategies
+
+### Chronos Strategy
+Uses Amazon's Chronos model for ML-based price prediction. This strategy:
+- Analyzes historical price patterns
+- Generates probabilistic forecasts
+- Provides confidence intervals
+
+### Technical Strategy
+Uses traditional technical analysis indicators to generate predictions:
+- RSI for overbought/oversold conditions
+- MACD for trend direction
+- Bollinger Bands for volatility
+- Moving Averages for trend confirmation
+
+## Trading Signals
+
+The demo provides trading signals based on multiple technical indicators:
+- RSI: Oversold (<30), Overbought (>70), Neutral
+- MACD: Buy (MACD > Signal), Sell (MACD < Signal)
+- Bollinger Bands: Buy (price < lower band), Sell (price > upper band)
+- SMA: Buy (20-day > 50-day), Sell (20-day < 50-day)
+
+An overall trading signal is calculated by combining all individual signals.
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## License
 
