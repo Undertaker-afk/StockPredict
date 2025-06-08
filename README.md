@@ -167,3 +167,67 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 ## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Practical Example: Creating a 6-Month 8% Yield Structured Product
+
+### Scenario
+A bank needs to create a structured product that offers an 8% yield over 6 months while maintaining profitability for the institution.
+
+### Step-by-Step Implementation
+
+1. **Initial Stock Screening**
+   - Use the application to analyze stocks with:
+     - High liquidity (for easy hedging)
+     - Stable volatility (for predictable risk)
+     - Strong technical indicators
+     - Positive long-term trends
+   - Recommended stocks: AAPL, MSFT, GOOGL (high liquidity, stable volatility)
+
+2. **Product Structure Design**
+   - Use the 6-month prediction horizon
+   - Analyze historical volatility for barrier setting
+   - Set participation rate based on risk metrics
+   - Structure: Reverse Convertible with 8% coupon
+
+3. **Risk Analysis**
+   - Use the application's risk metrics:
+     - Check maximum drawdown (should be < 15% for 6 months)
+     - Verify liquidity scores (should be > 80%)
+     - Analyze Sharpe ratio (should be > 1.5)
+
+4. **Business Case Example**
+
+   **Product Parameters:**
+   - Notional Amount: $1,000,000
+   - Term: 6 months
+   - Coupon: 8% p.a. (4% for 6 months)
+   - Underlying: AAPL
+   - Barrier: 85% of initial price
+   - Participation: 100%
+
+   **Revenue Structure:**
+   - Client receives: 8% p.a. (4% for 6 months)
+   - Bank's hedging cost: ~5% p.a.
+   - Bank's profit margin: ~3% p.a.
+   - Total client payout: $40,000 (4% of $1M)
+   - Bank's profit: $15,000 (1.5% of $1M)
+
+5. **Implementation Steps**
+   - Use the application's extended prediction horizon (180 days)
+   - Set technical indicators to monitor barrier risk
+   - Implement dynamic delta hedging based on predictions
+   - Monitor risk metrics daily using the application
+
+6. **Risk Management**
+   - Use the application's volatility predictions for dynamic hedging
+   - Monitor technical indicators for early warning signals
+   - Set up automated alerts for barrier proximity
+   - Regular rebalancing based on prediction updates
+
+### Key Success Factors
+- Regular monitoring of prediction accuracy
+- Dynamic adjustment of hedging strategy
+- Clear communication of product risks to clients
+- Proper documentation of all assumptions and methodologies
+
+This example demonstrates how the application can be used to create profitable structured products while managing risk effectively. The bank can use this framework to create similar products with different underlying assets, terms, and yield targets.

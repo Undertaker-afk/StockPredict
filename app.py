@@ -337,10 +337,10 @@ def create_interface():
                     label="Days to Predict"
                 )
                 lookback_days = gr.Slider(
-                    minimum=365,
+                    minimum=1,
                     maximum=3650,  # 10 years of history
                     value=365,
-                    step=30,
+                    step=1,
                     label="Historical Lookback (Days)"
                 )
                 strategy = gr.Dropdown(
