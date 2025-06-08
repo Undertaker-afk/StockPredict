@@ -34,25 +34,15 @@ def load_pipeline():
             clear_gpu_memory()
             pipeline = ChronosPipeline.from_pretrained(
                 "amazon/chronos-t5-large",
-                device_map="gpu",  # Let the model decide the best device mapping
-                torch_dtype=torch.float16, 
+                device_map="auto",  # Let the machine choose the best device
+                torch_dtype=torch.float16,  # Use float16 for better memory efficiency
                 low_cpu_mem_usage=True
             )
             pipeline.model = pipeline.model.eval()
         return pipeline
     except Exception as e:
         print(f"Error loading pipeline: {str(e)}")
-        # Fallback to CPU if GPU fails
-        if "cuda" in str(e).lower():
-            print("Falling back to CPU mode")
-            pipeline = ChronosPipeline.from_pretrained(
-                "amazon/chronos-t5-large",
-                device_map="cpu",
-                torch_dtype=torch.float32,
-                low_cpu_mem_usage=True
-            )
-            pipeline.model = pipeline.model.eval()
-        return pipeline
+        raise RuntimeError(f"Failed to load model: {str(e)}")
 
 def get_historical_data(symbol: str, timeframe: str = "1d", lookback_days: int = 365) -> pd.DataFrame:
     """
