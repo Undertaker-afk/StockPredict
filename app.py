@@ -12,24 +12,47 @@ import plotly.express as px
 from typing import Dict, List, Tuple, Optional
 import json
 import spaces
+import gc
 
 # Initialize global variables
 pipeline = None
 scaler = MinMaxScaler(feature_range=(-1, 1))
 scaler.fit_transform([[-1, 1]])
 
+def clear_gpu_memory():
+    """Clear GPU memory cache"""
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        gc.collect()
+
 @spaces.GPU
 def load_pipeline():
     """Load the Chronos model with GPU configuration"""
     global pipeline
-    if pipeline is None:
-        pipeline = ChronosPipeline.from_pretrained(
-            "amazon/chronos-t5-large",  # Using the largest model for best performance
-            device_map="cuda",  # Using CUDA for GPU acceleration
-            torch_dtype=torch.bfloat16  # Using bfloat16 for better memory efficiency
-        )
-        pipeline.model = pipeline.model.eval()
-    return pipeline
+    try:
+        if pipeline is None:
+            clear_gpu_memory()
+            pipeline = ChronosPipeline.from_pretrained(
+                "amazon/chronos-t5-large",
+                device_map="gpu",  # Let the model decide the best device mapping
+                torch_dtype=torch.float16, 
+                low_cpu_mem_usage=True
+            )
+            pipeline.model = pipeline.model.eval()
+        return pipeline
+    except Exception as e:
+        print(f"Error loading pipeline: {str(e)}")
+        # Fallback to CPU if GPU fails
+        if "cuda" in str(e).lower():
+            print("Falling back to CPU mode")
+            pipeline = ChronosPipeline.from_pretrained(
+                "amazon/chronos-t5-large",
+                device_map="cpu",
+                torch_dtype=torch.float32,
+                low_cpu_mem_usage=True
+            )
+            pipeline.model = pipeline.model.eval()
+        return pipeline
 
 def get_historical_data(symbol: str, timeframe: str = "1d", lookback_days: int = 365) -> pd.DataFrame:
     """
@@ -140,24 +163,42 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
         df = get_historical_data(symbol, timeframe)
         
         if strategy == "chronos":
-            # Prepare data for Chronos
-            returns = df['Returns'].values
-            normalized_returns = (returns - returns.mean()) / returns.std()
-            context = torch.tensor(normalized_returns.reshape(-1, 1), dtype=torch.float32)
-            
-            # Make prediction with GPU acceleration
-            pipe = load_pipeline()
-            with torch.inference_mode():
-                prediction = pipe.predict(
-                    context=context,
-                    prediction_length=prediction_days,
-                    num_samples=100
-                ).detach().cpu().numpy()
-            
-            mean_pred = prediction.mean(axis=0)
-            std_pred = prediction.std(axis=0)
-            
-        elif strategy == "technical":
+            try:
+                # Prepare data for Chronos
+                returns = df['Returns'].values
+                normalized_returns = (returns - returns.mean()) / returns.std()
+                context = torch.tensor(normalized_returns.reshape(-1, 1), dtype=torch.float32)
+                
+                # Make prediction with GPU acceleration
+                pipe = load_pipeline()
+                
+                # Limit prediction length to avoid memory issues
+                actual_prediction_days = min(prediction_days, 64)
+                
+                with torch.inference_mode():
+                    prediction = pipe.predict(
+                        context=context,
+                        prediction_length=actual_prediction_days,
+                        num_samples=100 
+                    ).detach().cpu().numpy()
+                
+                mean_pred = prediction.mean(axis=0)
+                std_pred = prediction.std(axis=0)
+                
+                # If we had to limit the prediction days, extend the prediction
+                if actual_prediction_days < prediction_days:
+                    last_pred = mean_pred[-1]
+                    last_std = std_pred[-1]
+                    extension = np.array([last_pred * (1 + np.random.normal(0, last_std, prediction_days - actual_prediction_days))])
+                    mean_pred = np.concatenate([mean_pred, extension])
+                    std_pred = np.concatenate([std_pred, np.full(prediction_days - actual_prediction_days, last_std)])
+                
+            except Exception as e:
+                print(f"Chronos prediction failed: {str(e)}")
+                print("Falling back to technical analysis")
+                strategy = "technical"
+        
+        if strategy == "technical":
             # Technical analysis based prediction
             last_price = df['Close'].iloc[-1]
             rsi = df['RSI'].iloc[-1]
@@ -251,13 +292,16 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
             "symbol": symbol,
             "prediction": mean_pred.tolist(),
             "confidence": std_pred.tolist(),
-            "dates": pred_dates.strftime('%Y-%m-%d').tolist()
+            "dates": pred_dates.strftime('%Y-%m-%d').tolist(),
+            "strategy_used": strategy
         })
         
         return signals, fig
         
     except Exception as e:
         raise Exception(f"Prediction error: {str(e)}")
+    finally:
+        clear_gpu_memory()
 
 def calculate_trading_signals(df: pd.DataFrame) -> Dict:
     """Calculate trading signals based on technical indicators"""
