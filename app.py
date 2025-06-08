@@ -446,6 +446,12 @@ def create_interface():
                             value="chronos"
                         )
                         hourly_predict_btn = gr.Button("Analyze Stock")
+                        gr.Markdown("""
+                        **Note for Hourly Analysis:**
+                        - Maximum lookback period: 30 days (Yahoo Finance limit)
+                        - Maximum prediction period: 7 days
+                        - Data is only available during market hours
+                        """)
                     
                     with gr.Column():
                         hourly_plot = gr.Plot(label="Analysis and Prediction")
@@ -476,7 +482,7 @@ def create_interface():
                         )
                         min15_lookback_days = gr.Slider(
                             minimum=1,
-                            maximum=5,  # Limited to 5 days for 15-minute data
+                            maximum=5,  # Yahoo Finance limit for 15-minute data
                             value=3,
                             step=1,
                             label="Historical Lookback (Days)"
@@ -487,6 +493,13 @@ def create_interface():
                             value="chronos"
                         )
                         min15_predict_btn = gr.Button("Analyze Stock")
+                        gr.Markdown("""
+                        **Note for 15-Minute Analysis:**
+                        - Maximum lookback period: 5 days (Yahoo Finance limit)
+                        - Maximum prediction period: 2 days
+                        - Data is only available during market hours
+                        - Requires at least 64 data points for Chronos predictions
+                        """)
                     
                     with gr.Column():
                         min15_plot = gr.Plot(label="Analysis and Prediction")
@@ -504,39 +517,47 @@ def create_interface():
                         min15_sector_metrics = gr.JSON(label="Sector Metrics")
         
         def analyze_stock(symbol, timeframe, prediction_days, lookback_days, strategy):
-            signals, fig = make_prediction(symbol, timeframe, prediction_days, strategy)
-            
-            # Get historical data for additional metrics
-            df = get_historical_data(symbol, timeframe, lookback_days)
-            
-            # Calculate structured product metrics
-            product_metrics = {
-                "Market_Cap": df['Market_Cap'].iloc[-1],
-                "Sector": df['Sector'].iloc[-1],
-                "Industry": df['Industry'].iloc[-1],
-                "Dividend_Yield": df['Dividend_Yield'].iloc[-1],
-                "Avg_Daily_Volume": df['Avg_Daily_Volume'].iloc[-1],
-                "Volume_Volatility": df['Volume_Volatility'].iloc[-1]
-            }
-            
-            # Calculate risk metrics
-            risk_metrics = {
-                "Annualized_Volatility": df['Annualized_Vol'].iloc[-1],
-                "Max_Drawdown": df['Max_Drawdown'].iloc[-1],
-                "Current_Drawdown": df['Drawdown'].iloc[-1],
-                "Sharpe_Ratio": (df['Returns'].mean() * 252) / (df['Returns'].std() * np.sqrt(252)),
-                "Sortino_Ratio": (df['Returns'].mean() * 252) / (df['Returns'][df['Returns'] < 0].std() * np.sqrt(252))
-            }
-            
-            # Calculate sector metrics
-            sector_metrics = {
-                "Sector": df['Sector'].iloc[-1],
-                "Industry": df['Industry'].iloc[-1],
-                "Market_Cap_Rank": "Large" if df['Market_Cap'].iloc[-1] > 1e10 else "Mid" if df['Market_Cap'].iloc[-1] > 1e9 else "Small",
-                "Liquidity_Score": "High" if df['Avg_Daily_Volume'].iloc[-1] > 1e6 else "Medium" if df['Avg_Daily_Volume'].iloc[-1] > 1e5 else "Low"
-            }
-            
-            return signals, fig, product_metrics, risk_metrics, sector_metrics
+            try:
+                signals, fig = make_prediction(symbol, timeframe, prediction_days, strategy)
+                
+                # Get historical data for additional metrics
+                df = get_historical_data(symbol, timeframe, lookback_days)
+                
+                # Calculate structured product metrics
+                product_metrics = {
+                    "Market_Cap": df['Market_Cap'].iloc[-1],
+                    "Sector": df['Sector'].iloc[-1],
+                    "Industry": df['Industry'].iloc[-1],
+                    "Dividend_Yield": df['Dividend_Yield'].iloc[-1],
+                    "Avg_Daily_Volume": df['Avg_Daily_Volume'].iloc[-1],
+                    "Volume_Volatility": df['Volume_Volatility'].iloc[-1]
+                }
+                
+                # Calculate risk metrics
+                risk_metrics = {
+                    "Annualized_Volatility": df['Annualized_Vol'].iloc[-1],
+                    "Max_Drawdown": df['Max_Drawdown'].iloc[-1],
+                    "Current_Drawdown": df['Drawdown'].iloc[-1],
+                    "Sharpe_Ratio": (df['Returns'].mean() * 252) / (df['Returns'].std() * np.sqrt(252)),
+                    "Sortino_Ratio": (df['Returns'].mean() * 252) / (df['Returns'][df['Returns'] < 0].std() * np.sqrt(252))
+                }
+                
+                # Calculate sector metrics
+                sector_metrics = {
+                    "Sector": df['Sector'].iloc[-1],
+                    "Industry": df['Industry'].iloc[-1],
+                    "Market_Cap_Rank": "Large" if df['Market_Cap'].iloc[-1] > 1e10 else "Mid" if df['Market_Cap'].iloc[-1] > 1e9 else "Small",
+                    "Liquidity_Score": "High" if df['Avg_Daily_Volume'].iloc[-1] > 1e6 else "Medium" if df['Avg_Daily_Volume'].iloc[-1] > 1e5 else "Low"
+                }
+                
+                return signals, fig, product_metrics, risk_metrics, sector_metrics
+            except Exception as e:
+                error_message = str(e)
+                if "Insufficient data points" in error_message:
+                    error_message = f"Not enough data available for {symbol} in {timeframe} timeframe. Please try a different timeframe or symbol."
+                elif "no price data found" in error_message:
+                    error_message = f"No data available for {symbol} in {timeframe} timeframe. Please try a different timeframe or symbol."
+                raise gr.Error(error_message)
         
         # Daily analysis button click
         daily_predict_btn.click(
