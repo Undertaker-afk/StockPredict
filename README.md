@@ -13,7 +13,7 @@ short_description: Use Amazon Chronos To Predict Stock Prices
 
 # Stock Analysis and Prediction Demo
 
-A comprehensive stock analysis and prediction tool built with Gradio, featuring multiple prediction strategies and technical analysis indicators.
+A comprehensive stock analysis and prediction tool built with Gradio, featuring multiple prediction strategies and technical analysis indicators. The application is particularly suited for structured financial product creation and analysis.
 
 ## Features
 
@@ -25,7 +25,7 @@ A comprehensive stock analysis and prediction tool built with Gradio, featuring 
   - RSI (Relative Strength Index)
   - MACD (Moving Average Convergence Divergence)
   - Bollinger Bands
-  - Simple Moving Averages (20 and 50-day)
+  - Simple Moving Averages (20, 50, and 200-day)
 
 - **Trading Signals**:
   - Buy/Sell recommendations based on multiple indicators
@@ -37,6 +37,41 @@ A comprehensive stock analysis and prediction tool built with Gradio, featuring 
   - Technical indicators overlay
   - Volume analysis
   - Historical price trends
+
+- **Structured Product Analysis**:
+  - Extended prediction horizons (up to 1 year)
+  - Historical analysis up to 10 years
+  - Comprehensive risk metrics
+  - Sector and industry analysis
+  - Liquidity assessment
+
+## Structured Product Features
+
+### Extended Time Horizons
+- Prediction window up to 365 days
+- Historical data analysis up to 10 years
+- Long-term trend analysis
+- Extended technical indicators
+
+### Risk Analysis
+- Annualized volatility
+- Maximum drawdown analysis
+- Current drawdown tracking
+- Sharpe and Sortino ratios
+- Risk-adjusted return metrics
+
+### Product Metrics
+- Market capitalization
+- Sector and industry classification
+- Dividend yield analysis
+- Volume metrics
+- Liquidity scoring
+
+### Sector Analysis
+- Market cap ranking (Large/Mid/Small)
+- Sector exposure
+- Industry classification
+- Liquidity assessment
 
 ## Installation
 
@@ -68,10 +103,37 @@ python app.py
 
 3. Enter a stock symbol (e.g., AAPL, GOOGL, MSFT) and select your desired parameters:
    - Timeframe (1d, 1h, 15m)
-   - Number of days to predict
+   - Number of days to predict (up to 365 days)
+   - Historical lookback period (up to 10 years)
    - Prediction strategy (Chronos or Technical)
 
-4. Click "Analyze Stock" to get predictions and trading signals
+4. Click "Analyze Stock" to get:
+   - Price predictions and trading signals
+   - Structured product metrics
+   - Risk analysis
+   - Sector analysis
+
+## Using for Structured Products
+
+### Initial Screening
+1. Use extended lookback period (up to 10 years) for long-term performance analysis
+2. Look for stocks with stable volatility and good risk-adjusted returns
+3. Check liquidity scores for trading feasibility
+
+### Risk Assessment
+1. Review risk metrics to match client risk profile
+2. Analyze maximum drawdowns for worst-case scenarios
+3. Compare risk-adjusted returns using Sharpe and Sortino ratios
+
+### Product Structuring
+1. Use prediction horizon (up to 1 year) for product maturity design
+2. Consider dividend yields for income-generating products
+3. Use sector analysis for proper diversification
+
+### Portfolio Construction
+1. Analyze multiple stocks for diversified bundles
+2. Use sector metrics to avoid overexposure
+3. Consider market cap rankings for appropriate sizing
 
 ## Prediction Strategies
 
