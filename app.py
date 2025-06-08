@@ -103,6 +103,7 @@ def calculate_bollinger_bands(prices: pd.Series, period: int = 20, std_dev: int 
     lower_band = middle_band - (std * std_dev)
     return upper_band, middle_band, lower_band
 
+@spaces.GPU
 def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5, strategy: str = "chronos") -> Dict:
     """
     Make prediction using selected strategy.
