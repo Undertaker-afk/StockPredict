@@ -141,7 +141,7 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
     
     Args:
         symbol (str): Stock symbol
-        timeframe (str): Data timeframe
+        timeframe (str): Data timeframe ('1d', '1h', '15m')
         prediction_days (int): Number of days to predict
         strategy (str): Prediction strategy to use
     
@@ -162,26 +162,39 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                 # Make prediction with GPU acceleration
                 pipe = load_pipeline()
                 
-                # Limit prediction length to avoid memory issues
-                actual_prediction_days = min(prediction_days, 64)
+                # Adjust prediction length based on timeframe
+                if timeframe == "1d":
+                    max_prediction_length = 64  # Maximum 64 days for daily data
+                elif timeframe == "1h":
+                    max_prediction_length = 168  # Maximum 7 days (168 hours) for hourly data
+                else:  # 15m
+                    max_prediction_length = 192  # Maximum 2 days (192 15-minute intervals) for 15m data
+                
+                # Convert prediction_days to appropriate intervals
+                if timeframe == "1d":
+                    actual_prediction_length = min(prediction_days, max_prediction_length)
+                elif timeframe == "1h":
+                    actual_prediction_length = min(prediction_days * 24, max_prediction_length)
+                else:  # 15m
+                    actual_prediction_length = min(prediction_days * 96, max_prediction_length)  # 96 intervals per day
                 
                 with torch.inference_mode():
                     prediction = pipe.predict(
                         context=context,
-                        prediction_length=actual_prediction_days,
+                        prediction_length=actual_prediction_length,
                         num_samples=100 
                     ).detach().cpu().numpy()
                 
                 mean_pred = prediction.mean(axis=0)
                 std_pred = prediction.std(axis=0)
                 
-                # If we had to limit the prediction days, extend the prediction
-                if actual_prediction_days < prediction_days:
+                # If we had to limit the prediction length, extend the prediction
+                if actual_prediction_length < prediction_days:
                     last_pred = mean_pred[-1]
                     last_std = std_pred[-1]
-                    extension = np.array([last_pred * (1 + np.random.normal(0, last_std, prediction_days - actual_prediction_days))])
+                    extension = np.array([last_pred * (1 + np.random.normal(0, last_std, prediction_days - actual_prediction_length))])
                     mean_pred = np.concatenate([mean_pred, extension])
-                    std_pred = np.concatenate([std_pred, np.full(prediction_days - actual_prediction_days, last_std)])
+                    std_pred = np.concatenate([std_pred, np.full(prediction_days - actual_prediction_length, last_std)])
                 
             except Exception as e:
                 print(f"Chronos prediction failed: {str(e)}")
@@ -203,9 +216,14 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
             mean_pred = np.array([last_price * (1 + trend * volatility * i) for i in range(1, prediction_days + 1)])
             std_pred = np.array([volatility * last_price * i for i in range(1, prediction_days + 1)])
         
-        # Create prediction dates
+        # Create prediction dates based on timeframe
         last_date = df.index[-1]
-        pred_dates = pd.date_range(start=last_date + timedelta(days=1), periods=prediction_days)
+        if timeframe == "1d":
+            pred_dates = pd.date_range(start=last_date + timedelta(days=1), periods=prediction_days)
+        elif timeframe == "1h":
+            pred_dates = pd.date_range(start=last_date + timedelta(hours=1), periods=prediction_days * 24)
+        else:  # 15m
+            pred_dates = pd.date_range(start=last_date + timedelta(minutes=15), periods=prediction_days * 96)
         
         # Create visualization
         fig = make_subplots(rows=3, cols=1, 
@@ -265,9 +283,9 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
             row=3, col=1
         )
         
-        # Update layout
+        # Update layout with timeframe-specific settings
         fig.update_layout(
-            title=f'{symbol} Analysis and Prediction',
+            title=f'{symbol} {timeframe} Analysis and Prediction',
             xaxis_title='Date',
             yaxis_title='Price',
             height=1000,
@@ -280,9 +298,10 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
         # Add prediction information to signals
         signals.update({
             "symbol": symbol,
+            "timeframe": timeframe,
             "prediction": mean_pred.tolist(),
             "confidence": std_pred.tolist(),
-            "dates": pred_dates.strftime('%Y-%m-%d').tolist(),
+            "dates": pred_dates.strftime('%Y-%m-%d %H:%M:%S').tolist(),
             "strategy_used": strategy
         })
         
@@ -316,54 +335,134 @@ def calculate_trading_signals(df: pd.DataFrame) -> Dict:
     return signals
 
 def create_interface():
-    """Create the Gradio interface"""
+    """Create the Gradio interface with separate tabs for different timeframes"""
     with gr.Blocks(title="Structured Product Analysis") as demo:
         gr.Markdown("# Structured Product Analysis")
         gr.Markdown("Analyze stocks for inclusion in structured financial products with extended time horizons.")
         
-        with gr.Row():
-            with gr.Column():
-                symbol = gr.Textbox(label="Stock Symbol (e.g., AAPL)", value="AAPL")
-                timeframe = gr.Dropdown(
-                    choices=["1d", "1h", "15m"],
-                    label="Timeframe",
-                    value="1d"
-                )
-                prediction_days = gr.Slider(
-                    minimum=1,
-                    maximum=365,  # Extended to 1 year
-                    value=30,
-                    step=1,
-                    label="Days to Predict"
-                )
-                lookback_days = gr.Slider(
-                    minimum=1,
-                    maximum=3650,  # 10 years of history
-                    value=365,
-                    step=1,
-                    label="Historical Lookback (Days)"
-                )
-                strategy = gr.Dropdown(
-                    choices=["chronos", "technical"],
-                    label="Prediction Strategy",
-                    value="chronos"
-                )
-                predict_btn = gr.Button("Analyze Stock")
+        with gr.Tabs() as tabs:
+            # Daily Analysis Tab
+            with gr.TabItem("Daily Analysis"):
+                with gr.Row():
+                    with gr.Column():
+                        daily_symbol = gr.Textbox(label="Stock Symbol (e.g., AAPL)", value="AAPL")
+                        daily_prediction_days = gr.Slider(
+                            minimum=1,
+                            maximum=365,
+                            value=30,
+                            step=1,
+                            label="Days to Predict"
+                        )
+                        daily_lookback_days = gr.Slider(
+                            minimum=1,
+                            maximum=3650,
+                            value=365,
+                            step=1,
+                            label="Historical Lookback (Days)"
+                        )
+                        daily_strategy = gr.Dropdown(
+                            choices=["chronos", "technical"],
+                            label="Prediction Strategy",
+                            value="chronos"
+                        )
+                        daily_predict_btn = gr.Button("Analyze Stock")
+                    
+                    with gr.Column():
+                        daily_plot = gr.Plot(label="Analysis and Prediction")
+                        daily_signals = gr.JSON(label="Trading Signals")
+                
+                with gr.Row():
+                    with gr.Column():
+                        gr.Markdown("### Structured Product Metrics")
+                        daily_metrics = gr.JSON(label="Product Metrics")
+                        
+                        gr.Markdown("### Risk Analysis")
+                        daily_risk_metrics = gr.JSON(label="Risk Metrics")
+                        
+                        gr.Markdown("### Sector Analysis")
+                        daily_sector_metrics = gr.JSON(label="Sector Metrics")
             
-            with gr.Column():
-                plot = gr.Plot(label="Analysis and Prediction")
-                signals = gr.JSON(label="Trading Signals")
-        
-        with gr.Row():
-            with gr.Column():
-                gr.Markdown("### Structured Product Metrics")
-                metrics = gr.JSON(label="Product Metrics")
+            # Hourly Analysis Tab
+            with gr.TabItem("Hourly Analysis"):
+                with gr.Row():
+                    with gr.Column():
+                        hourly_symbol = gr.Textbox(label="Stock Symbol (e.g., AAPL)", value="AAPL")
+                        hourly_prediction_days = gr.Slider(
+                            minimum=1,
+                            maximum=7,  # Limited to 7 days for hourly predictions
+                            value=3,
+                            step=1,
+                            label="Days to Predict"
+                        )
+                        hourly_lookback_days = gr.Slider(
+                            minimum=1,
+                            maximum=30,  # Limited to 30 days for hourly data
+                            value=14,
+                            step=1,
+                            label="Historical Lookback (Days)"
+                        )
+                        hourly_strategy = gr.Dropdown(
+                            choices=["chronos", "technical"],
+                            label="Prediction Strategy",
+                            value="chronos"
+                        )
+                        hourly_predict_btn = gr.Button("Analyze Stock")
+                    
+                    with gr.Column():
+                        hourly_plot = gr.Plot(label="Analysis and Prediction")
+                        hourly_signals = gr.JSON(label="Trading Signals")
                 
-                gr.Markdown("### Risk Analysis")
-                risk_metrics = gr.JSON(label="Risk Metrics")
+                with gr.Row():
+                    with gr.Column():
+                        gr.Markdown("### Structured Product Metrics")
+                        hourly_metrics = gr.JSON(label="Product Metrics")
+                        
+                        gr.Markdown("### Risk Analysis")
+                        hourly_risk_metrics = gr.JSON(label="Risk Metrics")
+                        
+                        gr.Markdown("### Sector Analysis")
+                        hourly_sector_metrics = gr.JSON(label="Sector Metrics")
+            
+            # 15-Minute Analysis Tab
+            with gr.TabItem("15-Minute Analysis"):
+                with gr.Row():
+                    with gr.Column():
+                        min15_symbol = gr.Textbox(label="Stock Symbol (e.g., AAPL)", value="AAPL")
+                        min15_prediction_days = gr.Slider(
+                            minimum=1,
+                            maximum=2,  # Limited to 2 days for 15-minute predictions
+                            value=1,
+                            step=1,
+                            label="Days to Predict"
+                        )
+                        min15_lookback_days = gr.Slider(
+                            minimum=1,
+                            maximum=5,  # Limited to 5 days for 15-minute data
+                            value=3,
+                            step=1,
+                            label="Historical Lookback (Days)"
+                        )
+                        min15_strategy = gr.Dropdown(
+                            choices=["chronos", "technical"],
+                            label="Prediction Strategy",
+                            value="chronos"
+                        )
+                        min15_predict_btn = gr.Button("Analyze Stock")
+                    
+                    with gr.Column():
+                        min15_plot = gr.Plot(label="Analysis and Prediction")
+                        min15_signals = gr.JSON(label="Trading Signals")
                 
-                gr.Markdown("### Sector Analysis")
-                sector_metrics = gr.JSON(label="Sector Metrics")
+                with gr.Row():
+                    with gr.Column():
+                        gr.Markdown("### Structured Product Metrics")
+                        min15_metrics = gr.JSON(label="Product Metrics")
+                        
+                        gr.Markdown("### Risk Analysis")
+                        min15_risk_metrics = gr.JSON(label="Risk Metrics")
+                        
+                        gr.Markdown("### Sector Analysis")
+                        min15_sector_metrics = gr.JSON(label="Sector Metrics")
         
         def analyze_stock(symbol, timeframe, prediction_days, lookback_days, strategy):
             signals, fig = make_prediction(symbol, timeframe, prediction_days, strategy)
@@ -400,10 +499,25 @@ def create_interface():
             
             return signals, fig, product_metrics, risk_metrics, sector_metrics
         
-        predict_btn.click(
-            fn=analyze_stock,
-            inputs=[symbol, timeframe, prediction_days, lookback_days, strategy],
-            outputs=[signals, plot, metrics, risk_metrics, sector_metrics]
+        # Daily analysis button click
+        daily_predict_btn.click(
+            fn=lambda s, pd, ld, st: analyze_stock(s, "1d", pd, ld, st),
+            inputs=[daily_symbol, daily_prediction_days, daily_lookback_days, daily_strategy],
+            outputs=[daily_signals, daily_plot, daily_metrics, daily_risk_metrics, daily_sector_metrics]
+        )
+        
+        # Hourly analysis button click
+        hourly_predict_btn.click(
+            fn=lambda s, pd, ld, st: analyze_stock(s, "1h", pd, ld, st),
+            inputs=[hourly_symbol, hourly_prediction_days, hourly_lookback_days, hourly_strategy],
+            outputs=[hourly_signals, hourly_plot, hourly_metrics, hourly_risk_metrics, hourly_sector_metrics]
+        )
+        
+        # 15-minute analysis button click
+        min15_predict_btn.click(
+            fn=lambda s, pd, ld, st: analyze_stock(s, "15m", pd, ld, st),
+            inputs=[min15_symbol, min15_prediction_days, min15_lookback_days, min15_strategy],
+            outputs=[min15_signals, min15_plot, min15_metrics, min15_risk_metrics, min15_sector_metrics]
         )
     
     return demo
