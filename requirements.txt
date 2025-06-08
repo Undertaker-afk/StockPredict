@@ -92,3 +92,4 @@ typer
 diskcache
 anthropic
 gradio>=4.0.0
+chronos-forecasting>=1.0.0
