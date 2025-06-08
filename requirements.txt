@@ -103,18 +103,8 @@ fastapi
 gunicorn
 uvicorn
 # git+https://github.com/amazon-science/chronos-forecasting.git
-chronos-forecasting>=1.5.2
-scikit-learn>=1.0.0
-
-python-binance
-typer
-diskcache
-anthropic
-gradio>=4.0.0
 spaces>=0.1.0
 numpy>=1.24.0
-torch>=2.0.0
 yfinance>=0.2.0
 plotly>=5.0.0
-chronos>=0.1.0
-chronos-pytorch>=0.1.0
+git+https://github.com/amazon-science/chronos-forecasting.git

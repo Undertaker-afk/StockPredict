@@ -4,27 +4,29 @@ import numpy as np
 from datetime import datetime, timedelta
 import yfinance as yf
 import torch
-from chronos import BaseChronosPipeline
+from chronos import ChronosPipeline
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from sklearn.preprocessing import MinMaxScaler
 import plotly.express as px
 from typing import Dict, List, Tuple, Optional
 import json
+import spaces
 
 # Initialize global variables
 pipeline = None
 scaler = MinMaxScaler(feature_range=(-1, 1))
 scaler.fit_transform([[-1, 1]])
 
+@spaces.GPU
 def load_pipeline():
-    """Load the Chronos model with CPU configuration"""
+    """Load the Chronos model with GPU configuration"""
     global pipeline
     if pipeline is None:
-        pipeline = BaseChronosPipeline.from_pretrained(
-            "amazon/chronos-bolt-base",
-            device_map="cpu",
-            torch_dtype=torch.float32
+        pipeline = ChronosPipeline.from_pretrained(
+            "amazon/chronos-t5-large",  # Using the largest model for best performance
+            device_map="cuda",  # Using CUDA for GPU acceleration
+            torch_dtype=torch.bfloat16  # Using bfloat16 for better memory efficiency
         )
         pipeline.model = pipeline.model.eval()
     return pipeline
@@ -124,16 +126,15 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
             normalized_returns = (returns - returns.mean()) / returns.std()
             context = torch.tensor(normalized_returns.reshape(-1, 1), dtype=torch.float32)
             
-            # Make prediction
+            # Make prediction with GPU acceleration
             pipe = load_pipeline()
             with torch.inference_mode():
                 prediction = pipe.predict(
                     context=context,
                     prediction_length=prediction_days,
-                    num_samples=100
+                    num_samples=100  # Increased samples for better uncertainty estimation
                 ).detach().cpu().numpy()
             
-            # Reshape prediction to get mean and std
             mean_pred = prediction.mean(axis=0)
             std_pred = prediction.std(axis=0)
             
