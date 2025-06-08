@@ -129,7 +129,8 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
             with torch.inference_mode():
                 prediction = pipe.predict(
                     context=context,
-                    prediction_length=prediction_days
+                    prediction_length=prediction_days,
+                    num_samples=100
                 ).detach().cpu().numpy()
             
             # Reshape prediction to get mean and std
