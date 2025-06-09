@@ -451,7 +451,6 @@ def create_interface():
                 with gr.Row():
                     with gr.Column():
 
-
                         gr.Markdown("### Structured Product Metrics")
                         daily_metrics = gr.JSON(label="Product Metrics")
                         
@@ -605,22 +604,94 @@ def create_interface():
                 raise gr.Error(error_message)
         
         # Daily analysis button click
+        def daily_analysis(s: str, pd: int, ld: int, st: str) -> Tuple[Dict, go.Figure, Dict, Dict, Dict]:
+            """
+            Process daily timeframe stock analysis and generate predictions.
+
+            Args:
+                s (str): Stock symbol (e.g., "AAPL", "MSFT", "GOOGL")
+                pd (int): Number of days to predict (1-365)
+                ld (int): Historical lookback period in days (1-3650)
+                st (str): Prediction strategy to use ("chronos" or "technical")
+
+            Returns:
+                Tuple[Dict, go.Figure, Dict, Dict, Dict]: A tuple containing:
+                    - Trading signals dictionary
+                    - Plotly figure with price and technical analysis
+                    - Product metrics dictionary
+                    - Risk metrics dictionary
+                    - Sector metrics dictionary
+
+            Example:
+                >>> daily_analysis("AAPL", 30, 365, "chronos")
+                ({'RSI': 'Neutral', 'MACD': 'Buy', ...}, <Figure>, {...}, {...}, {...})
+            """
+            return analyze_stock(s, "1d", pd, ld, st)
+
         daily_predict_btn.click(
-            fn=lambda s, pd, ld, st: analyze_stock(s, "1d", pd, ld, st),
+            fn=daily_analysis,
             inputs=[daily_symbol, daily_prediction_days, daily_lookback_days, daily_strategy],
             outputs=[daily_signals, daily_plot, daily_metrics, daily_risk_metrics, daily_sector_metrics]
         )
         
         # Hourly analysis button click
+        def hourly_analysis(s: str, pd: int, ld: int, st: str) -> Tuple[Dict, go.Figure, Dict, Dict, Dict]:
+            """
+            Process hourly timeframe stock analysis and generate predictions.
+
+            Args:
+                s (str): Stock symbol (e.g., "AAPL", "MSFT", "GOOGL")
+                pd (int): Number of days to predict (1-7)
+                ld (int): Historical lookback period in days (1-30)
+                st (str): Prediction strategy to use ("chronos" or "technical")
+
+            Returns:
+                Tuple[Dict, go.Figure, Dict, Dict, Dict]: A tuple containing:
+                    - Trading signals dictionary
+                    - Plotly figure with price and technical analysis
+                    - Product metrics dictionary
+                    - Risk metrics dictionary
+                    - Sector metrics dictionary
+
+            Example:
+                >>> hourly_analysis("AAPL", 3, 14, "chronos")
+                ({'RSI': 'Neutral', 'MACD': 'Buy', ...}, <Figure>, {...}, {...}, {...})
+            """
+            return analyze_stock(s, "1h", pd, ld, st)
+
         hourly_predict_btn.click(
-            fn=lambda s, pd, ld, st: analyze_stock(s, "1h", pd, ld, st),
+            fn=hourly_analysis,
             inputs=[hourly_symbol, hourly_prediction_days, hourly_lookback_days, hourly_strategy],
             outputs=[hourly_signals, hourly_plot, hourly_metrics, hourly_risk_metrics, hourly_sector_metrics]
         )
         
         # 15-minute analysis button click
+        def min15_analysis(s: str, pd: int, ld: int, st: str) -> Tuple[Dict, go.Figure, Dict, Dict, Dict]:
+            """
+            Process 15-minute timeframe stock analysis and generate predictions.
+
+            Args:
+                s (str): Stock symbol (e.g., "AAPL", "MSFT", "GOOGL")
+                pd (int): Number of days to predict (1-2)
+                ld (int): Historical lookback period in days (1-5)
+                st (str): Prediction strategy to use ("chronos" or "technical")
+
+            Returns:
+                Tuple[Dict, go.Figure, Dict, Dict, Dict]: A tuple containing:
+                    - Trading signals dictionary
+                    - Plotly figure with price and technical analysis
+                    - Product metrics dictionary
+                    - Risk metrics dictionary
+                    - Sector metrics dictionary
+
+            Example:
+                >>> min15_analysis("AAPL", 1, 3, "chronos")
+                ({'RSI': 'Neutral', 'MACD': 'Buy', ...}, <Figure>, {...}, {...}, {...})
+            """
+            return analyze_stock(s, "15m", pd, ld, st)
+
         min15_predict_btn.click(
-            fn=lambda s, pd, ld, st: analyze_stock(s, "15m", pd, ld, st),
+            fn=min15_analysis,
             inputs=[min15_symbol, min15_prediction_days, min15_lookback_days, min15_strategy],
             outputs=[min15_signals, min15_plot, min15_metrics, min15_risk_metrics, min15_sector_metrics]
         )

@@ -9,6 +9,8 @@ app_file: app.py
 pinned: false
 license: mit
 short_description: Use Amazon Chronos To Predict Stock Prices
+tags:
+  - mcp-server-track
 ---
 
 # Stock Analysis and Prediction Demo
