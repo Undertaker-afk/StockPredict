@@ -137,16 +137,17 @@ def get_historical_data(symbol: str, timeframe: str = "1d", lookback_days: int =
             sma_window_200 = 200 * 24  # ~40 trading days
             vol_window = 20 * 24
         
-        df['SMA_20'] = df['Close'].rolling(window=sma_window_20).mean()
-        df['SMA_50'] = df['Close'].rolling(window=sma_window_50).mean()
-        df['SMA_200'] = df['Close'].rolling(window=sma_window_200).mean()
+        # Calculate technical indicators
+        df['SMA_20'] = df['Close'].rolling(window=sma_window_20, min_periods=1).mean()
+        df['SMA_50'] = df['Close'].rolling(window=sma_window_50, min_periods=1).mean()
+        df['SMA_200'] = df['Close'].rolling(window=sma_window_200, min_periods=1).mean()
         df['RSI'] = calculate_rsi(df['Close'])
         df['MACD'], df['MACD_Signal'] = calculate_macd(df['Close'])
         df['BB_Upper'], df['BB_Middle'], df['BB_Lower'] = calculate_bollinger_bands(df['Close'])
         
         # Calculate returns and volatility
         df['Returns'] = df['Close'].pct_change()
-        df['Volatility'] = df['Returns'].rolling(window=vol_window).std()
+        df['Volatility'] = df['Returns'].rolling(window=vol_window, min_periods=1).std()
         df['Annualized_Vol'] = df['Volatility'] * np.sqrt(252)
         
         # Calculate drawdown metrics
@@ -155,11 +156,21 @@ def get_historical_data(symbol: str, timeframe: str = "1d", lookback_days: int =
         df['Max_Drawdown'] = df['Drawdown'].rolling(window=len(df), min_periods=1).min()
         
         # Calculate liquidity metrics
-        df['Avg_Daily_Volume'] = df['Volume'].rolling(window=vol_window).mean()
-        df['Volume_Volatility'] = df['Volume'].rolling(window=vol_window).std()
+        df['Avg_Daily_Volume'] = df['Volume'].rolling(window=vol_window, min_periods=1).mean()
+        df['Volume_Volatility'] = df['Volume'].rolling(window=vol_window, min_periods=1).std()
         
-        # Drop NaN values
-        df = df.dropna()
+        # Fill NaN values with forward fill, then backward fill
+        df = df.fillna(method='ffill').fillna(method='bfill')
+        
+        # Ensure we have enough data points
+        min_required_points = 64  # Minimum required for Chronos
+        if len(df) < min_required_points:
+            # Try to fetch more historical data
+            extended_start_date = start_date - timedelta(days=min_required_points - len(df))
+            extended_df = ticker.history(start=extended_start_date, end=start_date, interval=interval)
+            if not extended_df.empty:
+                df = pd.concat([extended_df, df])
+                df = df.fillna(method='ffill').fillna(method='bfill')
         
         if len(df) < 2:
             raise Exception(f"Insufficient data points for {symbol} in {timeframe} timeframe")
@@ -217,14 +228,18 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                 returns = df['Returns'].values
                 normalized_returns = (returns - returns.mean()) / returns.std()
                 
-                # Ensure we have enough data points
+                # Ensure we have enough data points and pad if necessary
                 min_data_points = 64  # Minimum required by Chronos
                 if len(normalized_returns) < min_data_points:
                     # Pad the data with the last value
                     padding = np.full(min_data_points - len(normalized_returns), normalized_returns[-1])
                     normalized_returns = np.concatenate([padding, normalized_returns])
+                elif len(normalized_returns) > min_data_points:
+                    # Take the most recent data points
+                    normalized_returns = normalized_returns[-min_data_points:]
                 
-                context = torch.tensor(normalized_returns.reshape(-1, 1), dtype=torch.float32)
+                # Reshape for Chronos (batch_size=1, sequence_length, features=1)
+                context = torch.tensor(normalized_returns.reshape(1, -1, 1), dtype=torch.float32)
                 
                 # Make prediction with GPU acceleration
                 pipe = load_pipeline()
