@@ -225,21 +225,24 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
         if strategy == "chronos":
             try:
                 # Prepare data for Chronos
-                returns = df['Returns'].values
-                normalized_returns = (returns - returns.mean()) / returns.std()
+                # Use Close prices instead of returns for better prediction
+                prices = df['Close'].values
+                
+                # Normalize the data using MinMaxScaler
+                normalized_prices = scaler.fit_transform(prices.reshape(-1, 1)).flatten()
                 
                 # Ensure we have enough data points and pad if necessary
                 min_data_points = 64  # Minimum required by Chronos
-                if len(normalized_returns) < min_data_points:
+                if len(normalized_prices) < min_data_points:
                     # Pad the data with the last value
-                    padding = np.full(min_data_points - len(normalized_returns), normalized_returns[-1])
-                    normalized_returns = np.concatenate([padding, normalized_returns])
-                elif len(normalized_returns) > min_data_points:
+                    padding = np.full(min_data_points - len(normalized_prices), normalized_prices[-1])
+                    normalized_prices = np.concatenate([padding, normalized_prices])
+                elif len(normalized_prices) > min_data_points:
                     # Take the most recent data points
-                    normalized_returns = normalized_returns[-min_data_points:]
+                    normalized_prices = normalized_prices[-min_data_points:]
                 
                 # Reshape for Chronos (batch_size=1, sequence_length, features=1)
-                context = torch.tensor(normalized_returns.reshape(1, -1, 1), dtype=torch.float32)
+                context = torch.tensor(normalized_prices.reshape(1, -1, 1), dtype=torch.float32)
                 
                 # Make prediction with GPU acceleration
                 pipe = load_pipeline()
@@ -270,8 +273,9 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                         num_samples=100 
                     ).detach().cpu().numpy()
                 
-                mean_pred = prediction.mean(axis=0)
-                std_pred = prediction.std(axis=0)
+                # Denormalize predictions
+                mean_pred = scaler.inverse_transform(prediction.mean(axis=0).reshape(-1, 1)).flatten()
+                std_pred = prediction.std(axis=0) * (scaler.data_max_ - scaler.data_min_)
                 
                 # If we had to limit the prediction length, extend the prediction
                 if actual_prediction_length < prediction_days:
