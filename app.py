@@ -319,12 +319,14 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                 # Make prediction with GPU acceleration
                 pipe = load_pipeline()
                 
-                # Get the model's device
+                # Get the model's device and dtype
                 device = next(pipe.model.parameters()).device
+                dtype = next(pipe.model.parameters()).dtype
                 print(f"Model device: {device}")
+                print(f"Model dtype: {dtype}")
                 
                 # Convert to tensor and ensure proper shape and device
-                context = torch.tensor(normalized_prices, dtype=torch.float32, device=device)
+                context = torch.tensor(normalized_prices, dtype=dtype, device=device)
                 
                 # Adjust prediction length based on timeframe
                 if timeframe == "1d":
@@ -354,9 +356,15 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                         if len(context.shape) == 1:
                             context = context.unsqueeze(0)  # Add batch dimension
                         
-                        # Verify device
+                        # Verify device and dtype
                         print(f"Context device: {context.device}")
+                        print(f"Context dtype: {context.dtype}")
                         print(f"Model device: {next(pipe.model.parameters()).device}")
+                        print(f"Model dtype: {next(pipe.model.parameters()).dtype}")
+                        
+                        # Move model to evaluation mode and ensure it's on the correct device
+                        pipe.model.eval()
+                        pipe.model = pipe.model.to(device)
                         
                         # Use predict_quantiles with proper formatting
                         quantiles, mean = pipe.predict_quantiles(
