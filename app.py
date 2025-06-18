@@ -316,11 +316,15 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                     # Take the most recent data points
                     normalized_prices = normalized_prices[-min_data_points:]
                 
-                # Convert to tensor and ensure proper shape
-                context = torch.tensor(normalized_prices, dtype=torch.float32)
-                
                 # Make prediction with GPU acceleration
                 pipe = load_pipeline()
+                
+                # Get the model's device
+                device = next(pipe.model.parameters()).device
+                print(f"Model device: {device}")
+                
+                # Convert to tensor and ensure proper shape and device
+                context = torch.tensor(normalized_prices, dtype=torch.float32, device=device)
                 
                 # Adjust prediction length based on timeframe
                 if timeframe == "1d":
@@ -346,12 +350,13 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                         print(f"Attempting prediction with context shape: {context.shape}")
                         print(f"Prediction length: {actual_prediction_length}")
                         
-                        # Move context to the same device as the model
-                        context = context.to(device=pipe.model.device)
-                        
                         # Ensure context is properly formatted for Chronos
                         if len(context.shape) == 1:
                             context = context.unsqueeze(0)  # Add batch dimension
+                        
+                        # Verify device
+                        print(f"Context device: {context.device}")
+                        print(f"Model device: {next(pipe.model.parameters()).device}")
                         
                         # Use predict_quantiles with proper formatting
                         quantiles, mean = pipe.predict_quantiles(
