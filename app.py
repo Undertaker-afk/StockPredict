@@ -620,6 +620,128 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                         mean_pred = extended_mean_pred[:prediction_days * 96]
                         std_pred = extended_std_pred[:prediction_days * 96]
                 
+                # Extend Chronos forecasting to volume and technical indicators
+                volume_pred = None
+                rsi_pred = None
+                macd_pred = None
+                
+                try:
+                    # Prepare volume data for Chronos
+                    volume_data = df['Volume'].values
+                    if len(volume_data) >= 64:
+                        # Normalize volume data
+                        volume_scaler = MinMaxScaler(feature_range=(-1, 1))
+                        normalized_volume = volume_scaler.fit_transform(volume_data.reshape(-1, 1)).flatten()
+                        
+                        # Use last 64 points for volume prediction
+                        volume_context = normalized_volume[-64:]
+                        volume_context_tensor = torch.tensor(volume_context, dtype=dtype, device=device)
+                        if len(volume_context_tensor.shape) == 1:
+                            volume_context_tensor = volume_context_tensor.unsqueeze(0)
+                        
+                        # Predict volume
+                        with torch.amp.autocast('cuda'):
+                            volume_quantiles, volume_mean = pipe.predict_quantiles(
+                                context=volume_context_tensor,
+                                prediction_length=min(actual_prediction_length, 64),
+                                quantile_levels=[0.1, 0.5, 0.9]
+                            )
+                        
+                        # Convert and denormalize volume predictions
+                        volume_mean = volume_mean.detach().cpu().numpy()
+                        volume_pred = volume_scaler.inverse_transform(volume_mean.reshape(-1, 1)).flatten()
+                        
+                        # Extend volume predictions if needed
+                        if len(volume_pred) < len(mean_pred):
+                            last_volume = volume_pred[-1]
+                            extension_length = len(mean_pred) - len(volume_pred)
+                            volume_extension = np.full(extension_length, last_volume)
+                            volume_pred = np.concatenate([volume_pred, volume_extension])
+                except Exception as e:
+                    print(f"Volume prediction error: {str(e)}")
+                    # Fallback: use historical average
+                    avg_volume = df['Volume'].mean()
+                    volume_pred = np.full(len(mean_pred), avg_volume)
+                
+                try:
+                    # Prepare RSI data for Chronos
+                    rsi_data = df['RSI'].values
+                    if len(rsi_data) >= 64 and not np.any(np.isnan(rsi_data)):
+                        # RSI is already normalized (0-100), but we'll scale it to (-1, 1)
+                        rsi_scaler = MinMaxScaler(feature_range=(-1, 1))
+                        normalized_rsi = rsi_scaler.fit_transform(rsi_data.reshape(-1, 1)).flatten()
+                        
+                        # Use last 64 points for RSI prediction
+                        rsi_context = normalized_rsi[-64:]
+                        rsi_context_tensor = torch.tensor(rsi_context, dtype=dtype, device=device)
+                        if len(rsi_context_tensor.shape) == 1:
+                            rsi_context_tensor = rsi_context_tensor.unsqueeze(0)
+                        
+                        # Predict RSI
+                        with torch.amp.autocast('cuda'):
+                            rsi_quantiles, rsi_mean = pipe.predict_quantiles(
+                                context=rsi_context_tensor,
+                                prediction_length=min(actual_prediction_length, 64),
+                                quantile_levels=[0.1, 0.5, 0.9]
+                            )
+                        
+                        # Convert and denormalize RSI predictions
+                        rsi_mean = rsi_mean.detach().cpu().numpy()
+                        rsi_pred = rsi_scaler.inverse_transform(rsi_mean.reshape(-1, 1)).flatten()
+                        
+                        # Clamp RSI to valid range (0-100)
+                        rsi_pred = np.clip(rsi_pred, 0, 100)
+                        
+                        # Extend RSI predictions if needed
+                        if len(rsi_pred) < len(mean_pred):
+                            last_rsi = rsi_pred[-1]
+                            extension_length = len(mean_pred) - len(rsi_pred)
+                            rsi_extension = np.full(extension_length, last_rsi)
+                            rsi_pred = np.concatenate([rsi_pred, rsi_extension])
+                except Exception as e:
+                    print(f"RSI prediction error: {str(e)}")
+                    # Fallback: use last known RSI value
+                    last_rsi = df['RSI'].iloc[-1]
+                    rsi_pred = np.full(len(mean_pred), last_rsi)
+                
+                try:
+                    # Prepare MACD data for Chronos
+                    macd_data = df['MACD'].values
+                    if len(macd_data) >= 64 and not np.any(np.isnan(macd_data)):
+                        # Normalize MACD data
+                        macd_scaler = MinMaxScaler(feature_range=(-1, 1))
+                        normalized_macd = macd_scaler.fit_transform(macd_data.reshape(-1, 1)).flatten()
+                        
+                        # Use last 64 points for MACD prediction
+                        macd_context = normalized_macd[-64:]
+                        macd_context_tensor = torch.tensor(macd_context, dtype=dtype, device=device)
+                        if len(macd_context_tensor.shape) == 1:
+                            macd_context_tensor = macd_context_tensor.unsqueeze(0)
+                        
+                        # Predict MACD
+                        with torch.amp.autocast('cuda'):
+                            macd_quantiles, macd_mean = pipe.predict_quantiles(
+                                context=macd_context_tensor,
+                                prediction_length=min(actual_prediction_length, 64),
+                                quantile_levels=[0.1, 0.5, 0.9]
+                            )
+                        
+                        # Convert and denormalize MACD predictions
+                        macd_mean = macd_mean.detach().cpu().numpy()
+                        macd_pred = macd_scaler.inverse_transform(macd_mean.reshape(-1, 1)).flatten()
+                        
+                        # Extend MACD predictions if needed
+                        if len(macd_pred) < len(mean_pred):
+                            last_macd = macd_pred[-1]
+                            extension_length = len(mean_pred) - len(macd_pred)
+                            macd_extension = np.full(extension_length, last_macd)
+                            macd_pred = np.concatenate([macd_pred, macd_extension])
+                except Exception as e:
+                    print(f"MACD prediction error: {str(e)}")
+                    # Fallback: use last known MACD value
+                    last_macd = df['MACD'].iloc[-1]
+                    macd_pred = np.full(len(mean_pred), last_macd)
+                
             except Exception as e:
                 print(f"Chronos prediction error: {str(e)}")
                 print(f"Error type: {type(e)}")
@@ -701,12 +823,35 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
             row=2, col=1
         )
         
+        # Add predicted technical indicators if available
+        if rsi_pred is not None:
+            fig.add_trace(
+                go.Scatter(x=pred_dates, y=rsi_pred, name='Predicted RSI',
+                          line=dict(color='purple', dash='dash')),
+                row=2, col=1
+            )
+        
+        if macd_pred is not None:
+            fig.add_trace(
+                go.Scatter(x=pred_dates, y=macd_pred, name='Predicted MACD',
+                          line=dict(color='orange', dash='dash')),
+                row=2, col=1
+            )
+        
         # Add volume
         fig.add_trace(
             go.Bar(x=df.index, y=df['Volume'], name='Volume',
                   marker_color='gray'),
             row=3, col=1
         )
+        
+        # Add predicted volume if available
+        if volume_pred is not None:
+            fig.add_trace(
+                go.Bar(x=pred_dates, y=volume_pred, name='Predicted Volume',
+                      marker_color='red', opacity=0.7),
+                row=3, col=1
+            )
         
         # Update layout with timeframe-specific settings
         fig.update_layout(
@@ -729,6 +874,14 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
             "dates": pred_dates.strftime('%Y-%m-%d %H:%M:%S').tolist(),
             "strategy_used": strategy
         })
+        
+        # Add predicted indicators to signals if available
+        if volume_pred is not None:
+            signals["predicted_volume"] = volume_pred.tolist()
+        if rsi_pred is not None:
+            signals["predicted_rsi"] = rsi_pred.tolist()
+        if macd_pred is not None:
+            signals["predicted_macd"] = macd_pred.tolist()
         
         return signals, fig
         
