@@ -13,158 +13,142 @@ tags:
   - mcp-server-track
 ---
 
-# Stock Analysis and Prediction Demo
+# Advanced Stock Prediction Analysis
 
-A comprehensive stock analysis and prediction tool built with Gradio, featuring multiple prediction strategies and technical analysis indicators. The application is particularly suited for structured financial product creation and analysis.
+A comprehensive stock prediction and analysis tool that combines Chronos forecasting with advanced features including regime detection, ensemble methods, and stress testing.
 
 ## Features
 
-- **Multiple Prediction Strategies**:
-  - Chronos ML-based prediction
-  - Technical analysis-based prediction
+### Core Prediction Engine
+- **Chronos Forecasting**: State-of-the-art time series forecasting using Amazon's Chronos model
+- **Technical Analysis**: Traditional technical indicators (RSI, MACD, Bollinger Bands, SMA)
+- **Multi-timeframe Support**: Daily, hourly, and 15-minute analysis
+- **Real-time Data**: Live market data via yfinance
 
-- **Technical Indicators**:
-  - RSI (Relative Strength Index)
-  - MACD (Moving Average Convergence Divergence)
-  - Bollinger Bands
-  - Simple Moving Averages (20, 50, and 200-day)
+### Advanced Features
 
-- **Trading Signals**:
-  - Buy/Sell recommendations based on multiple indicators
-  - Overall trading signal combining all indicators
-  - Confidence intervals for predictions
+#### 1. Market Regime Detection
+- **Hidden Markov Models (HMM)**: Automatic detection of market regimes (bull, bear, sideways)
+- **Volatility-based Fallback**: Simplified regime detection when HMM is unavailable
+- **Regime-adjusted Signals**: Trading signals that adapt to current market conditions
 
-- **Interactive Visualizations**:
-  - Price prediction with confidence intervals
-  - Technical indicators overlay
-  - Volume analysis
-  - Historical price trends
+#### 2. Ensemble Methods
+- **Multi-model Combination**: Combines Chronos, technical, and statistical predictions
+- **Adaptive Weighting**: User-configurable weights for different models
+- **Uncertainty Quantification**: Advanced uncertainty estimation with skewness adjustment
 
-- **Structured Product Analysis**:
-  - Extended prediction horizons (up to 1 year)
-  - Historical analysis up to 10 years
-  - Comprehensive risk metrics
-  - Sector and industry analysis
-  - Liquidity assessment
+#### 3. Advanced Risk Metrics
+- **Tail Risk Analysis**: VaR and CVaR calculations
+- **Market Correlation**: Beta, alpha, and correlation with market indices
+- **Risk-adjusted Returns**: Sharpe, Sortino, and Calmar ratios
+- **Drawdown Analysis**: Maximum drawdown and recovery metrics
 
-## Structured Product Features
+#### 4. Stress Testing
+- **Scenario Analysis**: Market crash, high volatility, bull market scenarios
+- **Interest Rate Shocks**: Impact of rate changes on predictions
+- **Custom Scenarios**: User-defined stress test parameters
 
-### Extended Time Horizons
-- Prediction window up to 365 days
-- Historical data analysis up to 10 years
-- Long-term trend analysis
-- Extended technical indicators
-
-### Risk Analysis
-- Annualized volatility
-- Maximum drawdown analysis
-- Current drawdown tracking
-- Sharpe and Sortino ratios
-- Risk-adjusted return metrics
-
-### Product Metrics
-- Market capitalization
-- Sector and industry classification
-- Dividend yield analysis
-- Volume metrics
-- Liquidity scoring
-
-### Sector Analysis
-- Market cap ranking (Large/Mid/Small)
-- Sector exposure
-- Industry classification
-- Liquidity assessment
+#### 5. Enhanced Uncertainty Quantification
+- **Skewness-aware**: Accounts for non-normal return distributions
+- **Adaptive Smoothing**: Reduces prediction drift based on uncertainty
+- **Confidence Intervals**: Dynamic confidence levels based on market conditions
 
 ## Installation
 
-1. Clone the repository:
-```bash
-git clone <repository-url>
-cd stock-prediction
-```
-
-2. Create and activate a virtual environment:
-```bash
-python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-```
-
-3. Install dependencies:
+1. Install dependencies:
 ```bash
 pip install -r requirements.txt
 ```
 
-## Usage
-
-1. Start the Gradio demo:
+2. Run the application:
 ```bash
 python app.py
 ```
 
-2. Open your web browser and navigate to the URL shown in the terminal (typically http://localhost:7860)
+## Usage
 
-3. Enter a stock symbol (e.g., AAPL, GOOGL, MSFT) and select your desired parameters:
-   - Timeframe (1d, 1h, 15m)
-   - Number of days to predict (up to 365 days)
-   - Historical lookback period (up to 10 years)
-   - Prediction strategy (Chronos or Technical)
+### Basic Analysis
+1. Enter a stock symbol (e.g., AAPL, MSFT, GOOGL)
+2. Select timeframe (Daily, Hourly, or 15-minute)
+3. Choose prediction strategy (Chronos or Technical)
+4. Set prediction days and lookback period
+5. Click "Analyze Stock"
 
-4. Click "Analyze Stock" to get:
-   - Price predictions and trading signals
-   - Structured product metrics
-   - Risk analysis
-   - Sector analysis
+### Advanced Settings
+- **Ensemble Methods**: Enable/disable multi-model combination
+- **Regime Detection**: Enable/disable market regime analysis
+- **Stress Testing**: Enable/disable scenario analysis
+- **Risk-free Rate**: Set annual risk-free rate for calculations
+- **Market Index**: Choose correlation index (S&P 500, Dow Jones, NASDAQ, Russell 2000)
+- **Ensemble Weights**: Adjust weights for Chronos, Technical, and Statistical models
 
-## Using for Structured Products
+### Output Sections
 
-### Initial Screening
-1. Use extended lookback period (up to 10 years) for long-term performance analysis
-2. Look for stocks with stable volatility and good risk-adjusted returns
-3. Check liquidity scores for trading feasibility
+#### Daily Analysis
+- **Structured Product Metrics**: Market cap, sector, financial ratios
+- **Advanced Risk Analysis**: Comprehensive risk metrics with market correlation
+- **Market Regime Analysis**: Current regime and transition probabilities
+- **Trading Signals**: Advanced signals with confidence levels
+- **Stress Test Results**: Scenario analysis outcomes
+- **Ensemble Analysis**: Multi-model combination details
 
-### Risk Assessment
-1. Review risk metrics to match client risk profile
-2. Analyze maximum drawdowns for worst-case scenarios
-3. Compare risk-adjusted returns using Sharpe and Sortino ratios
+#### Hourly/15-minute Analysis
+- **Intraday Metrics**: High-frequency volatility and momentum indicators
+- **Volume Analysis**: Volume-price trends and momentum
+- **Real-time Indicators**: Pre/post market data analysis
 
-### Product Structuring
-1. Use prediction horizon (up to 1 year) for product maturity design
-2. Consider dividend yields for income-generating products
-3. Use sector analysis for proper diversification
+## Technical Details
 
-### Portfolio Construction
-1. Analyze multiple stocks for diversified bundles
-2. Use sector metrics to avoid overexposure
-3. Consider market cap rankings for appropriate sizing
+### Regime Detection
+- Uses Hidden Markov Models with 3 states (low volatility, normal, high volatility)
+- Falls back to volatility-based detection if HMM unavailable
+- Regime probabilities influence trading signal thresholds
 
-## Prediction Strategies
+### Ensemble Methods
+- **Chronos**: Primary deep learning model (60% default weight)
+- **Technical**: Traditional indicators with mean reversion (20% default weight)
+- **Statistical**: ARIMA-like models with momentum (20% default weight)
 
-### Chronos Strategy
-Uses Amazon's Chronos model for ML-based price prediction. This strategy:
-- Analyzes historical price patterns
-- Generates probabilistic forecasts
-- Provides confidence intervals
+### Stress Testing Scenarios
+- **Market Crash**: 3x volatility, -15% return shock
+- **High Volatility**: 2x volatility, -5% return shock
+- **Low Volatility**: 0.5x volatility, +2% return shock
+- **Bull Market**: 1.2x volatility, +10% return shock
+- **Interest Rate Shock**: 1.5x volatility, -8% return shock
 
-### Technical Strategy
-Uses traditional technical analysis indicators to generate predictions:
-- RSI for overbought/oversold conditions
-- MACD for trend direction
-- Bollinger Bands for volatility
-- Moving Averages for trend confirmation
+### Uncertainty Quantification
+- Skewness-adjusted confidence intervals
+- Adaptive smoothing based on prediction uncertainty
+- Time-varying volatility modeling
 
-## Trading Signals
+## Dependencies
 
-The demo provides trading signals based on multiple technical indicators:
-- RSI: Oversold (<30), Overbought (>70), Neutral
-- MACD: Buy (MACD > Signal), Sell (MACD < Signal)
-- Bollinger Bands: Buy (price < lower band), Sell (price > upper band)
-- SMA: Buy (20-day > 50-day), Sell (20-day < 50-day)
+### Core
+- `torch>=2.1.2`: PyTorch for deep learning
+- `chronos-forecasting>=1.0.0`: Amazon's Chronos model
+- `yfinance>=0.2.0`: Yahoo Finance data
+- `gradio>=4.0.0`: Web interface
 
-An overall trading signal is calculated by combining all individual signals.
+### Advanced Features
+- `hmmlearn>=0.3.0`: Hidden Markov Models for regime detection
+- `scipy>=1.10.0`: Scientific computing and statistics
+- `scikit-learn>=1.0.0`: Machine learning utilities
+- `plotly>=5.0.0`: Interactive visualizations
+
+## Limitations
+
+1. **Market Hours**: Intraday data (hourly/15-minute) only available during market hours
+2. **Data Quality**: Dependent on yfinance data availability and quality
+3. **Model Complexity**: Advanced features may increase computation time
+4. **GPU Requirements**: Chronos model requires CUDA-capable GPU for optimal performance
+
+## Disclaimer
+
+This tool is for educational and research purposes only. Stock predictions are inherently uncertain and should not be used as the sole basis for investment decisions. Always conduct thorough research and consider consulting with financial professionals before making investment decisions.
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Contributions are welcome! Please feel free to submit pull requests or open issues for bugs and feature requests.
 
 ## License
 

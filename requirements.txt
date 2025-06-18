@@ -93,3 +93,7 @@ diskcache
 anthropic
 gradio>=4.0.0
 chronos-forecasting>=1.0.0
+
+# Advanced features dependencies
+hmmlearn>=0.3.0
+scipy>=1.10.0
