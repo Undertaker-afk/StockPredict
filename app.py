@@ -51,7 +51,7 @@ def clear_gpu_memory():
         torch.cuda.empty_cache()
         gc.collect()
 
-# @spaces.GPU(duration=180)
+@spaces.GPU(duration=180)
 def load_pipeline():
     """Load the Chronos model with GPU configuration"""
     global pipeline
@@ -69,6 +69,8 @@ def load_pipeline():
             )
             # Set model to evaluation mode
             pipeline.model = pipeline.model.eval()
+            # Move entire model to CUDA
+            pipeline.model = pipeline.model.cuda()
             # Disable gradient computation
             for param in pipeline.model.parameters():
                 param.requires_grad = False
@@ -365,6 +367,11 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                         # Move model to evaluation mode and ensure it's on the correct device
                         pipe.model.eval()
                         pipe.model = pipe.model.to(device)
+                        
+                        # Ensure all model components are on the same device
+                        for module in pipe.model.modules():
+                            if hasattr(module, 'to'):
+                                module.to(device)
                         
                         # Use predict_quantiles with proper formatting
                         quantiles, mean = pipe.predict_quantiles(
