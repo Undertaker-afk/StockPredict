@@ -1135,24 +1135,39 @@ def detect_market_regime(returns: pd.Series, n_regimes: int = 3) -> Dict:
             # Use HMM for regime detection
             # Convert pandas Series to numpy array for reshape
             returns_array = returns.dropna().values
-            model = hmm.GaussianHMM(n_components=n_regimes, random_state=42, covariance_type="full")
-            model.fit(returns_array.reshape(-1, 1))
             
-            # Get regime probabilities for the last observation
-            regime_probs = model.predict_proba(returns_array.reshape(-1, 1))
-            current_regime = model.predict(returns_array.reshape(-1, 1))[-1]
-            
-            # Calculate regime characteristics
-            regime_means = model.means_.flatten()
-            regime_vols = np.sqrt(model.covars_.diagonal(axis1=1, axis2=2))
-            
-            return {
-                "regime": int(current_regime),
-                "probabilities": regime_probs[-1].tolist(),
-                "means": regime_means.tolist(),
-                "volatilities": regime_vols.tolist(),
-                "method": "HMM"
-            }
+            # Try different HMM configurations if convergence fails
+            for attempt in range(3):
+                try:
+                    if attempt == 0:
+                        model = hmm.GaussianHMM(n_components=n_regimes, random_state=42, covariance_type="full", n_iter=100)
+                    elif attempt == 1:
+                        model = hmm.GaussianHMM(n_components=n_regimes, random_state=42, covariance_type="diag", n_iter=200)
+                    else:
+                        model = hmm.GaussianHMM(n_components=n_regimes, random_state=42, covariance_type="spherical", n_iter=300)
+                    
+                    model.fit(returns_array.reshape(-1, 1))
+                    
+                    # Get regime probabilities for the last observation
+                    regime_probs = model.predict_proba(returns_array.reshape(-1, 1))
+                    current_regime = model.predict(returns_array.reshape(-1, 1))[-1]
+                    
+                    # Calculate regime characteristics
+                    regime_means = model.means_.flatten()
+                    regime_vols = np.sqrt(model.covars_.diagonal(axis1=1, axis2=2)) if model.covariance_type == "full" else np.sqrt(model.covars_)
+                    
+                    return {
+                        "regime": int(current_regime),
+                        "probabilities": regime_probs[-1].tolist(),
+                        "means": regime_means.tolist(),
+                        "volatilities": regime_vols.tolist(),
+                        "method": f"HMM-{model.covariance_type}"
+                    }
+                except Exception as e:
+                    if attempt == 2:  # Last attempt failed
+                        print(f"HMM failed after {attempt + 1} attempts: {str(e)}")
+                        break
+                    continue
         else:
             # Simplified regime detection using volatility clustering
             volatility = returns.rolling(window=20).std().dropna()
@@ -1809,6 +1824,9 @@ def create_interface():
                         
                         gr.Markdown("### Trading Signals")
                         daily_signals = gr.JSON(label="Trading Signals")
+                        
+                        gr.Markdown("### Advanced Trading Signals")
+                        daily_signals_advanced = gr.JSON(label="Advanced Trading Signals")
                     
                     with gr.Column():
                         gr.Markdown("### Sector & Financial Analysis")
@@ -2030,7 +2048,21 @@ def create_interface():
                     "ensemble_weights": ensemble_weights
                 }
                 
-                return signals, fig, product_metrics, risk_metrics, sector_metrics, regime_metrics, stress_results, ensemble_metrics
+                # Separate basic and advanced signals
+                basic_signals = {
+                    "RSI": signals.get("RSI", "Neutral"),
+                    "MACD": signals.get("MACD", "Hold"),
+                    "Bollinger": signals.get("Bollinger", "Hold"),
+                    "SMA": signals.get("SMA", "Hold"),
+                    "Overall": signals.get("Overall", "Hold"),
+                    "symbol": signals.get("symbol", symbol),
+                    "timeframe": signals.get("timeframe", timeframe),
+                    "strategy_used": signals.get("strategy_used", strategy)
+                }
+                
+                advanced_signals = signals.get("advanced_signals", {})
+                
+                return basic_signals, fig, product_metrics, risk_metrics, sector_metrics, regime_metrics, stress_results, ensemble_metrics, advanced_signals
             except Exception as e:
                 error_message = str(e)
                 if "Market is currently closed" in error_message:
@@ -2043,7 +2075,7 @@ def create_interface():
         
         # Daily analysis button click
         def daily_analysis(s: str, pd: int, ld: int, st: str, ue: bool, urd: bool, ust: bool,
-                          rfr: float, mi: str, cw: float, tw: float, sw: float) -> Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict]:
+                          rfr: float, mi: str, cw: float, tw: float, sw: float) -> Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict]:
             """
             Process daily timeframe stock analysis with advanced features.
 
@@ -2072,12 +2104,12 @@ def create_interface():
                    use_ensemble, use_regime_detection, use_stress_testing, risk_free_rate, market_index,
                    chronos_weight, technical_weight, statistical_weight],
             outputs=[daily_signals, daily_plot, daily_metrics, daily_risk_metrics, daily_sector_metrics,
-                    daily_regime_metrics, daily_stress_results, daily_ensemble_metrics]
+                    daily_regime_metrics, daily_stress_results, daily_ensemble_metrics, daily_signals_advanced]
         )
         
         # Hourly analysis button click
         def hourly_analysis(s: str, pd: int, ld: int, st: str, ue: bool, urd: bool, ust: bool,
-                           rfr: float, mi: str, cw: float, tw: float, sw: float) -> Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict]:
+                           rfr: float, mi: str, cw: float, tw: float, sw: float) -> Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict]:
             """
             Process hourly timeframe stock analysis with advanced features.
 
@@ -2106,12 +2138,12 @@ def create_interface():
                    use_ensemble, use_regime_detection, use_stress_testing, risk_free_rate, market_index,
                    chronos_weight, technical_weight, statistical_weight],
             outputs=[hourly_signals, hourly_plot, hourly_metrics, hourly_risk_metrics, hourly_sector_metrics,
-                    hourly_regime_metrics, hourly_stress_results, hourly_ensemble_metrics]
+                    hourly_regime_metrics, hourly_stress_results, hourly_ensemble_metrics, hourly_signals_advanced]
         )
         
         # 15-minute analysis button click
         def min15_analysis(s: str, pd: int, ld: int, st: str, ue: bool, urd: bool, ust: bool,
-                          rfr: float, mi: str, cw: float, tw: float, sw: float) -> Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict]:
+                          rfr: float, mi: str, cw: float, tw: float, sw: float) -> Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict]:
             """
             Process 15-minute timeframe stock analysis with advanced features.
 
@@ -2140,7 +2172,7 @@ def create_interface():
                    use_ensemble, use_regime_detection, use_stress_testing, risk_free_rate, market_index,
                    chronos_weight, technical_weight, statistical_weight],
             outputs=[min15_signals, min15_plot, min15_metrics, min15_risk_metrics, min15_sector_metrics,
-                    min15_regime_metrics, min15_stress_results, min15_ensemble_metrics]
+                    min15_regime_metrics, min15_stress_results, min15_ensemble_metrics, min15_signals_advanced]
         )
     
     return demo
