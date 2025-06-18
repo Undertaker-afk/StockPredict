@@ -51,7 +51,7 @@ def clear_gpu_memory():
         torch.cuda.empty_cache()
         gc.collect()
 
-@spaces.GPU
+@spaces.GPU(duration=180)
 def load_pipeline():
     """Load the Chronos model with GPU configuration"""
     global pipeline
@@ -279,7 +279,7 @@ def calculate_bollinger_bands(prices: pd.Series, period: int = 20, std_dev: int 
     lower_band = middle_band - (std * std_dev)
     return upper_band, middle_band, lower_band
 
-@spaces.GPU
+@spaces.GPU(duration=180)
 def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5, strategy: str = "chronos") -> Tuple[Dict, go.Figure]:
     """
     Make prediction using selected strategy.
@@ -866,4 +866,4 @@ def create_interface():
 
 if __name__ == "__main__":
     demo = create_interface()
-    demo.launch(share=True, ssr_mode=False, mcp_server=True) 
+    demo.launch(ssr_mode=False, mcp_server=True) 
