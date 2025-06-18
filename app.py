@@ -335,55 +335,100 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                 
                 actual_prediction_length = max(1, actual_prediction_length)
                 
-                with torch.inference_mode():
-                    try:
-                        print(f"Attempting prediction with context shape: {context.shape}")
-                        print(f"Prediction length: {actual_prediction_length}")
+                with torch.amp.autocast('cuda'):
+                    # Ensure all inputs are on GPU
+                    context = context.to(device)
+                    
+                    # Move quantile levels to GPU
+                    quantile_levels = torch.tensor([0.1, 0.5, 0.9], device=device, dtype=dtype)
+                    
+                    # Ensure prediction length is on GPU
+                    prediction_length = torch.tensor(actual_prediction_length, device=device, dtype=torch.long)
+                    
+                    # Force all model components to GPU
+                    pipe.model = pipe.model.to(device)
+                    
+                    # Move model to evaluation mode
+                    pipe.model.eval()
+                    
+                    # Ensure context is properly shaped and on GPU
+                    if len(context.shape) == 1:
+                        context = context.unsqueeze(0)
+                    context = context.to(device)
+                    
+                    # Move all model parameters and buffers to GPU
+                    for param in pipe.model.parameters():
+                        param.data = param.data.to(device)
+                    for buffer in pipe.model.buffers():
+                        buffer.data = buffer.data.to(device)
+                    
+                    # Move all model submodules to GPU
+                    for module in pipe.model.modules():
+                        if hasattr(module, 'to'):
+                            module.to(device)
+                    
+                    # Move all model attributes to GPU
+                    for name, value in pipe.model.__dict__.items():
+                        if isinstance(value, torch.Tensor):
+                            pipe.model.__dict__[name] = value.to(device)
+                    
+                    # Move all model config tensors to GPU
+                    if hasattr(pipe.model, 'config'):
+                        for key, value in pipe.model.config.__dict__.items():
+                            if isinstance(value, torch.Tensor):
+                                setattr(pipe.model.config, key, value.to(device))
+                    
+                    # Move all pipeline tensors to GPU
+                    for name, value in pipe.__dict__.items():
+                        if isinstance(value, torch.Tensor):
+                            setattr(pipe, name, value.to(device))
+                    
+                    # Ensure all model states are on GPU
+                    if hasattr(pipe.model, 'state_dict'):
+                        state_dict = pipe.model.state_dict()
+                        for key in state_dict:
+                            if isinstance(state_dict[key], torch.Tensor):
+                                state_dict[key] = state_dict[key].to(device)
+                        pipe.model.load_state_dict(state_dict)
+                    
+                    # Move any additional components to GPU
+                    if hasattr(pipe, 'tokenizer'):
+                        for name, value in pipe.tokenizer.__dict__.items():
+                            if isinstance(value, torch.Tensor):
+                                setattr(pipe.tokenizer, name, value.to(device))
+                    
+                    # Ensure all inputs are on the same device
+                    with torch.cuda.device(device):
+                        # Force synchronization to ensure all tensors are on GPU
+                        torch.cuda.synchronize()
                         
-                        # Ensure context is properly formatted for Chronos
-                        if len(context.shape) == 1:
-                            context = context.unsqueeze(0)
-                        
-                        # Verify device and dtype
-                        print(f"Context device: {context.device}")
-                        print(f"Context dtype: {context.dtype}")
-                        print(f"Model device: {next(pipe.model.parameters()).device}")
-                        print(f"Model dtype: {next(pipe.model.parameters()).dtype}")
-                        
-                        # Move model to evaluation mode
-                        pipe.model.eval()
-                        
-                        # Move the entire model and all its components to GPU
+                        # Ensure all model components are on GPU
                         pipe.model = pipe.model.to(device)
                         
-                        # Move all model parameters and buffers to GPU
-                        for param in pipe.model.parameters():
-                            param.data = param.data.to(device)
-                        for buffer in pipe.model.buffers():
-                            buffer.data = buffer.data.to(device)
-                        
-                        # Move all model submodules to GPU
-                        for module in pipe.model.modules():
+                        # Move any additional tensors in the model to GPU
+                        for name, module in pipe.model.named_modules():
                             if hasattr(module, 'to'):
                                 module.to(device)
+                            # Move any tensors in the module's __dict__
+                            for key, value in module.__dict__.items():
+                                if isinstance(value, torch.Tensor):
+                                    setattr(module, key, value.to(device))
                         
-                        # Move all model attributes to GPU
-                        for name, value in pipe.model.__dict__.items():
+                        # Move any additional tensors in the pipeline to GPU
+                        for name, value in pipe.__dict__.items():
                             if isinstance(value, torch.Tensor):
-                                pipe.model.__dict__[name] = value.to(device)
+                                setattr(pipe, name, value.to(device))
                         
-                        # Move all model config tensors to GPU
+                        # Ensure all model components are in eval mode
+                        pipe.model.eval()
+                        
+                        # Move any additional tensors in the model's config to GPU
                         if hasattr(pipe.model, 'config'):
                             for key, value in pipe.model.config.__dict__.items():
                                 if isinstance(value, torch.Tensor):
                                     setattr(pipe.model.config, key, value.to(device))
                         
-                        # Move all pipeline tensors to GPU
-                        for name, value in pipe.__dict__.items():
-                            if isinstance(value, torch.Tensor):
-                                setattr(pipe, name, value.to(device))
-                        
-                        # Ensure all model states are on GPU
+                        # Move any additional tensors in the model's state dict to GPU
                         if hasattr(pipe.model, 'state_dict'):
                             state_dict = pipe.model.state_dict()
                             for key in state_dict:
@@ -391,64 +436,70 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                                     state_dict[key] = state_dict[key].to(device)
                             pipe.model.load_state_dict(state_dict)
                         
-                        # Move any additional components to GPU
-                        if hasattr(pipe, 'tokenizer'):
-                            for name, value in pipe.tokenizer.__dict__.items():
+                        # Move any additional tensors in the model's buffers to GPU
+                        for name, buffer in pipe.model.named_buffers():
+                            if buffer is not None:
+                                pipe.model.register_buffer(name, buffer.to(device))
+                        
+                        # Move any additional tensors in the model's parameters to GPU
+                        for name, param in pipe.model.named_parameters():
+                            if param is not None:
+                                param.data = param.data.to(device)
+                        
+                        # Move any additional tensors in the model's attributes to GPU
+                        for name, value in pipe.model.__dict__.items():
+                            if isinstance(value, torch.Tensor):
+                                pipe.model.__dict__[name] = value.to(device)
+                        
+                        # Move any additional tensors in the model's modules to GPU
+                        for name, module in pipe.model.named_modules():
+                            if hasattr(module, 'to'):
+                                module.to(device)
+                            # Move any tensors in the module's __dict__
+                            for key, value in module.__dict__.items():
                                 if isinstance(value, torch.Tensor):
-                                    setattr(pipe.tokenizer, name, value.to(device))
+                                    setattr(module, key, value.to(device))
                         
-                        # Ensure context is properly shaped and on GPU
-                        if len(context.shape) == 1:
-                            context = context.unsqueeze(0)
-                        context = context.to(device)
+                        # Force synchronization again to ensure all tensors are on GPU
+                        torch.cuda.synchronize()
                         
-                        # Ensure all inputs are on the same device
-                        with torch.cuda.device(device):
-                            # Force synchronization to ensure all tensors are on GPU
-                            torch.cuda.synchronize()
-                            
-                            # Make prediction
-                            quantiles, mean = pipe.predict_quantiles(
-                                context=context,
-                                prediction_length=actual_prediction_length,
-                                quantile_levels=[0.1, 0.5, 0.9]
-                            )
-                        
-                        if quantiles is None or mean is None:
-                            raise ValueError("Chronos returned empty prediction")
-                        
-                        print(f"Quantiles shape: {quantiles.shape}, Mean shape: {mean.shape}")
-                        
-                        # Convert to numpy arrays
-                        quantiles = quantiles.detach().cpu().numpy()
-                        mean = mean.detach().cpu().numpy()
-                        
-                        # Denormalize predictions
-                        mean_pred = scaler.inverse_transform(mean.reshape(-1, 1)).flatten()
-                        lower_bound = scaler.inverse_transform(quantiles[0, :, 0].reshape(-1, 1)).flatten()
-                        upper_bound = scaler.inverse_transform(quantiles[0, :, 2].reshape(-1, 1)).flatten()
-                        
-                        # Calculate standard deviation from quantiles
-                        std_pred = (upper_bound - lower_bound) / (2 * 1.645)
-                        
-                        # If we had to limit the prediction length, extend the prediction
-                        if actual_prediction_length < prediction_days:
-                            last_pred = mean_pred[-1]
-                            last_std = std_pred[-1]
-                            extension = np.array([last_pred * (1 + np.random.normal(0, last_std, prediction_days - actual_prediction_length))])
-                            mean_pred = np.concatenate([mean_pred, extension])
-                            std_pred = np.concatenate([std_pred, np.full(prediction_days - actual_prediction_length, last_std)])
-                        
-                    except Exception as e:
-                        print(f"Chronos prediction error: {str(e)}")
-                        print(f"Error type: {type(e)}")
-                        print(f"Error details: {str(e)}")
-                        raise
+                        # Make prediction
+                        quantiles, mean = pipe.predict_quantiles(
+                            context=context,
+                            prediction_length=actual_prediction_length,
+                            quantile_levels=[0.1, 0.5, 0.9]
+                        )
+                
+                if quantiles is None or mean is None:
+                    raise ValueError("Chronos returned empty prediction")
+                
+                print(f"Quantiles shape: {quantiles.shape}, Mean shape: {mean.shape}")
+                
+                # Convert to numpy arrays
+                quantiles = quantiles.detach().cpu().numpy()
+                mean = mean.detach().cpu().numpy()
+                
+                # Denormalize predictions
+                mean_pred = scaler.inverse_transform(mean.reshape(-1, 1)).flatten()
+                lower_bound = scaler.inverse_transform(quantiles[0, :, 0].reshape(-1, 1)).flatten()
+                upper_bound = scaler.inverse_transform(quantiles[0, :, 2].reshape(-1, 1)).flatten()
+                
+                # Calculate standard deviation from quantiles
+                std_pred = (upper_bound - lower_bound) / (2 * 1.645)
+                
+                # If we had to limit the prediction length, extend the prediction
+                if actual_prediction_length < prediction_days:
+                    last_pred = mean_pred[-1]
+                    last_std = std_pred[-1]
+                    extension = np.array([last_pred * (1 + np.random.normal(0, last_std, prediction_days - actual_prediction_length))])
+                    mean_pred = np.concatenate([mean_pred, extension])
+                    std_pred = np.concatenate([std_pred, np.full(prediction_days - actual_prediction_length, last_std)])
                 
             except Exception as e:
-                print(f"Chronos prediction failed: {str(e)}")
-                print("Falling back to technical analysis")
-                strategy = "technical"
+                print(f"Chronos prediction error: {str(e)}")
+                print(f"Error type: {type(e)}")
+                print(f"Error details: {str(e)}")
+                raise
         
         if strategy == "technical":
             # Technical analysis based prediction
