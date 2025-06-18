@@ -370,12 +370,19 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                         # Move model to evaluation mode
                         pipe.model.eval()
                         
+                        # Ensure pipeline components are on the correct device
+                        if hasattr(pipe, 'tokenizer'):
+                            pipe.tokenizer = pipe.tokenizer.to(device)
+                        if hasattr(pipe, 'config'):
+                            pipe.config = pipe.config.to(device)
+                        
                         # Use predict_quantiles with proper formatting
-                        quantiles, mean = pipe.predict_quantiles(
-                            context=context,
-                            prediction_length=actual_prediction_length,
-                            quantile_levels=[0.1, 0.5, 0.9]
-                        )
+                        with torch.cuda.device(device):
+                            quantiles, mean = pipe.predict_quantiles(
+                                context=context,
+                                prediction_length=actual_prediction_length,
+                                quantile_levels=[0.1, 0.5, 0.9]
+                            )
                         
                         if quantiles is None or mean is None:
                             raise ValueError("Chronos returned empty prediction")
