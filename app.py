@@ -352,11 +352,30 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                         # Move model to evaluation mode
                         pipe.model.eval()
                         
-                        # Move the entire model to GPU
+                        # Move the entire model and all its components to GPU
                         pipe.model = pipe.model.to(device)
+                        
+                        # Ensure all model parameters and buffers are on GPU
+                        for param in pipe.model.parameters():
+                            param.data = param.data.to(device)
+                        for buffer in pipe.model.buffers():
+                            buffer.data = buffer.data.to(device)
+                        
+                        # Move any registered buffers or parameters in submodules
+                        for module in pipe.model.modules():
+                            if hasattr(module, 'register_buffer'):
+                                for name, buffer in module._buffers.items():
+                                    if buffer is not None:
+                                        module._buffers[name] = buffer.to(device)
+                            if hasattr(module, 'register_parameter'):
+                                for name, param in module._parameters.items():
+                                    if param is not None:
+                                        module._parameters[name] = param.to(device)
                         
                         # Use predict_quantiles with proper formatting
                         with torch.amp.autocast('cuda'):
+                            # Ensure all inputs are on GPU
+                            context = context.to(device)
                             quantiles, mean = pipe.predict_quantiles(
                                 context=context,
                                 prediction_length=actual_prediction_length,
