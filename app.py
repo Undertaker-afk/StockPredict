@@ -14,11 +14,36 @@ import json
 import spaces
 import gc
 import pytz
+import time
+import random
 
 # Initialize global variables
 pipeline = None
 scaler = MinMaxScaler(feature_range=(-1, 1))
 scaler.fit_transform([[-1, 1]])
+
+def retry_yfinance_request(func, max_retries=3, initial_delay=1):
+    """
+    Retry mechanism for yfinance requests with exponential backoff.
+    
+    Args:
+        func: Function to retry
+        max_retries: Maximum number of retry attempts
+        initial_delay: Initial delay in seconds before first retry
+    
+    Returns:
+        Result of the function call if successful
+    """
+    for attempt in range(max_retries):
+        try:
+            return func()
+        except Exception as e:
+            if "401" in str(e) and attempt < max_retries - 1:
+                # Calculate delay with exponential backoff and jitter
+                delay = initial_delay * (2 ** attempt) + random.uniform(0, 1)
+                time.sleep(delay)
+                continue
+            raise e
 
 def clear_gpu_memory():
     """Clear GPU memory cache"""
@@ -106,15 +131,23 @@ def get_historical_data(symbol: str, timeframe: str = "1d", lookback_days: int =
         end_date = datetime.now()
         start_date = end_date - timedelta(days=lookback_days)
         
-        # Fetch data using yfinance
+        # Fetch data using yfinance with retry mechanism
         ticker = yf.Ticker(symbol)
-        df = ticker.history(start=start_date, end=end_date, interval=interval)
+        
+        def fetch_history():
+            return ticker.history(start=start_date, end=end_date, interval=interval)
+        
+        df = retry_yfinance_request(fetch_history)
         
         if df.empty:
             raise Exception(f"No data available for {symbol} in {timeframe} timeframe")
         
-        # Get additional info for structured products
-        info = ticker.info
+        # Get additional info for structured products with retry mechanism
+        def fetch_info():
+            return ticker.info
+        
+        info = retry_yfinance_request(fetch_info)
+        
         df['Market_Cap'] = info.get('marketCap', None)
         df['Sector'] = info.get('sector', None)
         df['Industry'] = info.get('industry', None)
@@ -165,9 +198,13 @@ def get_historical_data(symbol: str, timeframe: str = "1d", lookback_days: int =
         # Ensure we have enough data points
         min_required_points = 64  # Minimum required for Chronos
         if len(df) < min_required_points:
-            # Try to fetch more historical data
+            # Try to fetch more historical data with retry mechanism
             extended_start_date = start_date - timedelta(days=min_required_points - len(df))
-            extended_df = ticker.history(start=extended_start_date, end=start_date, interval=interval)
+            
+            def fetch_extended_history():
+                return ticker.history(start=extended_start_date, end=start_date, interval=interval)
+            
+            extended_df = retry_yfinance_request(fetch_extended_history)
             if not extended_df.empty:
                 df = pd.concat([extended_df, df])
                 df = df.fillna(method='ffill').fillna(method='bfill')
