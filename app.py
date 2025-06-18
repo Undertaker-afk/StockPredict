@@ -335,6 +335,7 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                 
                 actual_prediction_length = max(1, actual_prediction_length)
                 
+                # Use predict_quantiles with proper formatting
                 with torch.amp.autocast('cuda'):
                     # Ensure all inputs are on GPU
                     context = context.to(device)
@@ -459,6 +460,44 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                             for key, value in module.__dict__.items():
                                 if isinstance(value, torch.Tensor):
                                     setattr(module, key, value.to(device))
+                        
+                        # Force synchronization again to ensure all tensors are on GPU
+                        torch.cuda.synchronize()
+                        
+                        # Ensure tokenizer is on GPU and all its tensors are on GPU
+                        if hasattr(pipe, 'tokenizer'):
+                            # Move tokenizer to GPU if it supports it
+                            if hasattr(pipe.tokenizer, 'to'):
+                                pipe.tokenizer = pipe.tokenizer.to(device)
+                            
+                            # Move all tokenizer tensors to GPU
+                            for name, value in pipe.tokenizer.__dict__.items():
+                                if isinstance(value, torch.Tensor):
+                                    setattr(pipe.tokenizer, name, value.to(device))
+                            
+                            # Move any additional tensors in the tokenizer's modules to GPU
+                            for name, module in pipe.tokenizer.named_modules():
+                                if hasattr(module, 'to'):
+                                    module.to(device)
+                                # Move any tensors in the module's __dict__
+                                for key, value in module.__dict__.items():
+                                    if isinstance(value, torch.Tensor):
+                                        setattr(module, key, value.to(device))
+                            
+                            # Move any additional tensors in the tokenizer's buffers to GPU
+                            for name, buffer in pipe.tokenizer.named_buffers():
+                                if buffer is not None:
+                                    pipe.tokenizer.register_buffer(name, buffer.to(device))
+                            
+                            # Move any additional tensors in the tokenizer's parameters to GPU
+                            for name, param in pipe.tokenizer.named_parameters():
+                                if param is not None:
+                                    param.data = param.data.to(device)
+                            
+                            # Move any additional tensors in the tokenizer's attributes to GPU
+                            for name, value in pipe.tokenizer.__dict__.items():
+                                if isinstance(value, torch.Tensor):
+                                    pipe.tokenizer.__dict__[name] = value.to(device)
                         
                         # Force synchronization again to ensure all tensors are on GPU
                         torch.cuda.synchronize()
