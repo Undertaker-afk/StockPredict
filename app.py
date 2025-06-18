@@ -303,13 +303,8 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                 # Use Close prices for prediction
                 prices = df['Close'].values
                 
-                # Calculate returns for additional context
-                returns = np.diff(prices) / prices[:-1]
-                returns = np.insert(returns, 0, 0)  # Add 0 for first day
-                
                 # Normalize the data using MinMaxScaler
                 normalized_prices = scaler.fit_transform(prices.reshape(-1, 1)).flatten()
-                normalized_returns = scaler.fit_transform(returns.reshape(-1, 1)).flatten()
                 
                 # Ensure we have enough data points and pad if necessary
                 min_data_points = 64  # Minimum required by Chronos
@@ -317,18 +312,12 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                     # Pad the data with the last value
                     padding = np.full(min_data_points - len(normalized_prices), normalized_prices[-1])
                     normalized_prices = np.concatenate([padding, normalized_prices])
-                    padding_returns = np.full(min_data_points - len(normalized_returns), normalized_returns[-1])
-                    normalized_returns = np.concatenate([padding_returns, normalized_returns])
                 elif len(normalized_prices) > min_data_points:
                     # Take the most recent data points
                     normalized_prices = normalized_prices[-min_data_points:]
-                    normalized_returns = normalized_returns[-min_data_points:]
                 
-                # Combine price and returns data
-                combined_data = np.column_stack((normalized_prices, normalized_returns))
-                
-                # Reshape for Chronos (batch_size=1, sequence_length, features=2)
-                context = torch.tensor(combined_data.reshape(1, -1, 2), dtype=torch.float32)
+                # Reshape for Chronos (batch_size=1, sequence_length, features=1)
+                context = torch.tensor(normalized_prices.reshape(1, -1, 1), dtype=torch.float32)
                 
                 # Make prediction with GPU acceleration
                 pipe = load_pipeline()
@@ -367,11 +356,20 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                             if len(context_tensor.shape) != 3:
                                 raise ValueError(f"Expected 3D tensor, got shape {context_tensor.shape}")
                             
-                            quantiles, mean = pipe.predict_quantiles(
-                                context=context_tensor,
-                                prediction_length=actual_prediction_length,
-                                quantile_levels=[0.1, 0.5, 0.9]  # 10th, 50th, and 90th percentiles
-                            )
+                            # Try with default configuration first
+                            try:
+                                quantiles, mean = pipe.predict_quantiles(
+                                    context=context_tensor,
+                                    prediction_length=actual_prediction_length
+                                )
+                            except Exception as e:
+                                print(f"Default predict_quantiles failed: {str(e)}")
+                                # Try with explicit quantile levels
+                                quantiles, mean = pipe.predict_quantiles(
+                                    context=context_tensor,
+                                    prediction_length=actual_prediction_length,
+                                    quantile_levels=[0.1, 0.5, 0.9]  # 10th, 50th, and 90th percentiles
+                                )
                             
                             if quantiles is None or mean is None:
                                 raise ValueError("Chronos returned empty prediction")
@@ -398,11 +396,20 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                             # Convert context to the correct format
                             context_tensor = context.to(device=pipe.model.device, dtype=torch.float16)
                             
-                            prediction = pipe.predict(
-                                context=context_tensor,
-                                prediction_length=actual_prediction_length,
-                                num_samples=100
-                            )
+                            # Try with default configuration first
+                            try:
+                                prediction = pipe.predict(
+                                    context=context_tensor,
+                                    prediction_length=actual_prediction_length
+                                )
+                            except Exception as e:
+                                print(f"Default predict failed: {str(e)}")
+                                # Try with explicit num_samples
+                                prediction = pipe.predict(
+                                    context=context_tensor,
+                                    prediction_length=actual_prediction_length,
+                                    num_samples=100
+                                )
                             
                             if prediction is None:
                                 raise ValueError("Chronos predict returned None")
