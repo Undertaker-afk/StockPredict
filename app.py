@@ -421,20 +421,10 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                             if isinstance(value, torch.Tensor):
                                 pipe.tokenizer.__dict__[name] = value.to(device)
                         
-                        # Ensure all tokenizer methods are on GPU
+                        # Remove the EOS token handling since MeanScaleUniformBins doesn't use it
                         if hasattr(pipe.tokenizer, '_append_eos_token'):
-                            # Create a wrapper for _append_eos_token to ensure device consistency
-                            original_append_eos = pipe.tokenizer._append_eos_token
+                            # Create a wrapper that just returns the input tensors
                             def wrapped_append_eos(token_ids, attention_mask):
-                                # Ensure both tensors are on GPU
-                                token_ids = token_ids.to(device)
-                                attention_mask = attention_mask.to(device)
-                                # Get the EOS token and ensure it's on GPU
-                                eos_token = torch.tensor([pipe.tokenizer.eos_token_id], device=device)
-                                eos_tokens = eos_token.unsqueeze(0).expand(token_ids.shape[0], 1)
-                                # Concatenate on GPU
-                                token_ids = torch.cat((token_ids, eos_tokens), dim=1)
-                                attention_mask = torch.cat((attention_mask, torch.ones_like(eos_tokens)), dim=1)
                                 return token_ids, attention_mask
                             pipe.tokenizer._append_eos_token = wrapped_append_eos
                     
