@@ -1128,81 +1128,126 @@ def calculate_advanced_risk_metrics(df: pd.DataFrame, market_returns: pd.Series 
     Returns:
         Dict: Advanced risk metrics
     """
-    returns = df['Returns'].dropna()
-    
-    if len(returns) < 30:
-        return {"error": "Insufficient data for risk calculation"}
-    
-    # Basic metrics
-    annual_return = returns.mean() * 252
-    annual_vol = returns.std() * np.sqrt(252)
-    
-    # Market-adjusted metrics
-    if market_returns is not None and len(market_returns) > 0:
-        # Align dates
-        aligned_returns = returns.reindex(market_returns.index).dropna()
-        aligned_market = market_returns.reindex(aligned_returns.index).dropna()
+    try:
+        returns = df['Returns'].dropna()
         
-        if len(aligned_returns) > 10:
-            beta = np.cov(aligned_returns, aligned_market)[0,1] / np.var(aligned_market)
-            alpha = aligned_returns.mean() - beta * aligned_market.mean()
-            correlation = np.corrcoef(aligned_returns, aligned_market)[0,1]
-        else:
-            beta = 1.0
-            alpha = 0.0
-            correlation = 0.0
-    else:
+        if len(returns) < 30:
+            return {"error": "Insufficient data for risk calculation"}
+        
+        # Basic metrics
+        annual_return = returns.mean() * 252
+        annual_vol = returns.std() * np.sqrt(252)
+        
+        # Market-adjusted metrics
         beta = 1.0
         alpha = 0.0
         correlation = 0.0
-    
-    # Tail risk metrics
-    var_95 = np.percentile(returns, 5)
-    var_99 = np.percentile(returns, 1)
-    cvar_95 = returns[returns <= var_95].mean()
-    cvar_99 = returns[returns <= var_99].mean()
-    
-    # Maximum drawdown
-    cumulative_returns = (1 + returns).cumprod()
-    rolling_max = cumulative_returns.expanding().max()
-    drawdown = (cumulative_returns - rolling_max) / rolling_max
-    max_drawdown = drawdown.min()
-    
-    # Skewness and kurtosis
-    skewness = stats.skew(returns)
-    kurtosis = stats.kurtosis(returns)
-    
-    # Risk-adjusted returns
-    sharpe_ratio = (annual_return - risk_free_rate) / annual_vol if annual_vol > 0 else 0
-    sortino_ratio = (annual_return - risk_free_rate) / (returns[returns < 0].std() * np.sqrt(252)) if returns[returns < 0].std() > 0 else 0
-    calmar_ratio = annual_return / abs(max_drawdown) if max_drawdown != 0 else 0
-    
-    # Information ratio (if market data available)
-    if market_returns is not None and len(market_returns) > 0:
-        excess_returns = aligned_returns - aligned_market
-        information_ratio = excess_returns.mean() / excess_returns.std() if excess_returns.std() > 0 else 0
-    else:
+        aligned_returns = None
+        aligned_market = None
+        
+        if market_returns is not None and len(market_returns) > 0:
+            try:
+                # Align dates
+                aligned_returns = returns.reindex(market_returns.index).dropna()
+                aligned_market = market_returns.reindex(aligned_returns.index).dropna()
+                
+                # Ensure both arrays have the same length
+                if len(aligned_returns) > 10 and len(aligned_market) > 10:
+                    # Find the common length
+                    min_length = min(len(aligned_returns), len(aligned_market))
+                    aligned_returns = aligned_returns.iloc[-min_length:]
+                    aligned_market = aligned_market.iloc[-min_length:]
+                    
+                    # Ensure they have the same length
+                    if len(aligned_returns) == len(aligned_market) and len(aligned_returns) > 10:
+                        try:
+                            beta = np.cov(aligned_returns, aligned_market)[0,1] / np.var(aligned_market)
+                            alpha = aligned_returns.mean() - beta * aligned_market.mean()
+                            correlation = np.corrcoef(aligned_returns, aligned_market)[0,1]
+                        except Exception as e:
+                            print(f"Market correlation calculation error: {str(e)}")
+                            beta = 1.0
+                            alpha = 0.0
+                            correlation = 0.0
+                    else:
+                        beta = 1.0
+                        alpha = 0.0
+                        correlation = 0.0
+                else:
+                    beta = 1.0
+                    alpha = 0.0
+                    correlation = 0.0
+            except Exception as e:
+                print(f"Market data alignment error: {str(e)}")
+                beta = 1.0
+                alpha = 0.0
+                correlation = 0.0
+                aligned_returns = None
+                aligned_market = None
+        
+        # Tail risk metrics
+        var_95 = np.percentile(returns, 5)
+        var_99 = np.percentile(returns, 1)
+        cvar_95 = returns[returns <= var_95].mean()
+        cvar_99 = returns[returns <= var_99].mean()
+        
+        # Maximum drawdown
+        cumulative_returns = (1 + returns).cumprod()
+        rolling_max = cumulative_returns.expanding().max()
+        drawdown = (cumulative_returns - rolling_max) / rolling_max
+        max_drawdown = drawdown.min()
+        
+        # Skewness and kurtosis
+        skewness = stats.skew(returns)
+        kurtosis = stats.kurtosis(returns)
+        
+        # Risk-adjusted returns
+        sharpe_ratio = (annual_return - risk_free_rate) / annual_vol if annual_vol > 0 else 0
+        sortino_ratio = (annual_return - risk_free_rate) / (returns[returns < 0].std() * np.sqrt(252)) if returns[returns < 0].std() > 0 else 0
+        calmar_ratio = annual_return / abs(max_drawdown) if max_drawdown != 0 else 0
+        
+        # Information ratio (if market data available)
         information_ratio = 0
-    
-    return {
-        "Annual_Return": annual_return,
-        "Annual_Volatility": annual_vol,
-        "Sharpe_Ratio": sharpe_ratio,
-        "Sortino_Ratio": sortino_ratio,
-        "Calmar_Ratio": calmar_ratio,
-        "Information_Ratio": information_ratio,
-        "Beta": beta,
-        "Alpha": alpha * 252,
-        "Correlation_with_Market": correlation,
-        "VaR_95": var_95,
-        "VaR_99": var_99,
-        "CVaR_95": cvar_95,
-        "CVaR_99": cvar_99,
-        "Max_Drawdown": max_drawdown,
-        "Skewness": skewness,
-        "Kurtosis": kurtosis,
-        "Risk_Free_Rate": risk_free_rate
-    }
+        if aligned_returns is not None and aligned_market is not None:
+            try:
+                if len(aligned_returns) > 10 and len(aligned_market) > 10:
+                    min_length = min(len(aligned_returns), len(aligned_market))
+                    aligned_returns_for_ir = aligned_returns.iloc[-min_length:]
+                    aligned_market_for_ir = aligned_market.iloc[-min_length:]
+                    
+                    if len(aligned_returns_for_ir) == len(aligned_market_for_ir):
+                        excess_returns = aligned_returns_for_ir - aligned_market_for_ir
+                        information_ratio = excess_returns.mean() / excess_returns.std() if excess_returns.std() > 0 else 0
+                    else:
+                        information_ratio = 0
+                else:
+                    information_ratio = 0
+            except Exception as e:
+                print(f"Information ratio calculation error: {str(e)}")
+                information_ratio = 0
+        
+        return {
+            "Annual_Return": annual_return,
+            "Annual_Volatility": annual_vol,
+            "Sharpe_Ratio": sharpe_ratio,
+            "Sortino_Ratio": sortino_ratio,
+            "Calmar_Ratio": calmar_ratio,
+            "Information_Ratio": information_ratio,
+            "Beta": beta,
+            "Alpha": alpha * 252,
+            "Correlation_with_Market": correlation,
+            "VaR_95": var_95,
+            "VaR_99": var_99,
+            "CVaR_95": cvar_95,
+            "CVaR_99": cvar_99,
+            "Max_Drawdown": max_drawdown,
+            "Skewness": skewness,
+            "Kurtosis": kurtosis,
+            "Risk_Free_Rate": risk_free_rate
+        }
+    except Exception as e:
+        print(f"Advanced risk metrics calculation error: {str(e)}")
+        return {"error": f"Risk calculation failed: {str(e)}"}
 
 def create_ensemble_prediction(df: pd.DataFrame, prediction_days: int, 
                              ensemble_weights: Dict = None) -> Tuple[np.ndarray, np.ndarray]:
