@@ -356,100 +356,63 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                         # Move the entire model and all its components to GPU
                         pipe.model = pipe.model.to(device)
                         
-                        # Ensure all model parameters and buffers are on GPU
+                        # Move all model parameters and buffers to GPU
                         for param in pipe.model.parameters():
                             param.data = param.data.to(device)
                         for buffer in pipe.model.buffers():
                             buffer.data = buffer.data.to(device)
                         
-                        # Move any registered buffers or parameters in submodules
+                        # Move all model submodules to GPU
                         for module in pipe.model.modules():
-                            if hasattr(module, 'register_buffer'):
-                                for name, buffer in module._buffers.items():
-                                    if buffer is not None and hasattr(buffer, 'to'):
-                                        module._buffers[name] = buffer.to(device)
-                            if hasattr(module, 'register_parameter'):
-                                for name, param in module._parameters.items():
-                                    if param is not None and hasattr(param, 'to'):
-                                        module._parameters[name] = param.to(device)
+                            if hasattr(module, 'to'):
+                                module.to(device)
                         
-                        # Use predict_quantiles with proper formatting
-                        with torch.amp.autocast('cuda'):
-                            # Ensure all inputs are on GPU
-                            context = context.to(device)
+                        # Move all model attributes to GPU
+                        for name, value in pipe.model.__dict__.items():
+                            if isinstance(value, torch.Tensor):
+                                pipe.model.__dict__[name] = value.to(device)
+                        
+                        # Move all model config tensors to GPU
+                        if hasattr(pipe.model, 'config'):
+                            for key, value in pipe.model.config.__dict__.items():
+                                if isinstance(value, torch.Tensor):
+                                    setattr(pipe.model.config, key, value.to(device))
+                        
+                        # Move all pipeline tensors to GPU
+                        for name, value in pipe.__dict__.items():
+                            if isinstance(value, torch.Tensor):
+                                setattr(pipe, name, value.to(device))
+                        
+                        # Ensure all model states are on GPU
+                        if hasattr(pipe.model, 'state_dict'):
+                            state_dict = pipe.model.state_dict()
+                            for key in state_dict:
+                                if isinstance(state_dict[key], torch.Tensor):
+                                    state_dict[key] = state_dict[key].to(device)
+                            pipe.model.load_state_dict(state_dict)
+                        
+                        # Move any additional components to GPU
+                        if hasattr(pipe, 'tokenizer'):
+                            for name, value in pipe.tokenizer.__dict__.items():
+                                if isinstance(value, torch.Tensor):
+                                    setattr(pipe.tokenizer, name, value.to(device))
+                        
+                        # Ensure context is properly shaped and on GPU
+                        if len(context.shape) == 1:
+                            context = context.unsqueeze(0)
+                        context = context.to(device)
+                        
+                        # Ensure all inputs are on the same device
+                        with torch.cuda.device(device):
+                            # Force synchronization to ensure all tensors are on GPU
+                            torch.cuda.synchronize()
                             
-                            # Move quantile levels to GPU
-                            quantile_levels = torch.tensor([0.1, 0.5, 0.9], device=device, dtype=dtype)
-                            
-                            # Ensure prediction length is on GPU
-                            prediction_length = torch.tensor(actual_prediction_length, device=device, dtype=torch.long)
-                            
-                            # Force all model components to GPU
-                            pipe.model = pipe.model.to(device)
-                            if hasattr(pipe, 'tokenizer') and hasattr(pipe.tokenizer, 'to'):
-                                pipe.tokenizer = pipe.tokenizer.to(device)
-                            
-                            # Ensure all model states are on GPU
-                            if hasattr(pipe.model, 'state_dict'):
-                                state_dict = pipe.model.state_dict()
-                                for key in state_dict:
-                                    if isinstance(state_dict[key], torch.Tensor):
-                                        state_dict[key] = state_dict[key].to(device)
-                                pipe.model.load_state_dict(state_dict)
-                            
-                            # Ensure all model attributes are on GPU
-                            for attr_name in dir(pipe.model):
-                                attr = getattr(pipe.model, attr_name)
-                                if isinstance(attr, torch.Tensor) and hasattr(attr, 'to'):
-                                    setattr(pipe.model, attr_name, attr.to(device))
-                            
-                            # Ensure all model submodules are on GPU
-                            for name, module in pipe.model.named_modules():
-                                if hasattr(module, 'to'):
-                                    module.to(device)
-                            
-                            # Ensure all model buffers are on GPU
-                            for name, buffer in pipe.model.named_buffers():
-                                if buffer is not None and hasattr(buffer, 'to'):
-                                    pipe.model.register_buffer(name, buffer.to(device))
-                            
-                            # Ensure all model parameters are on GPU
-                            for name, param in pipe.model.named_parameters():
-                                if param is not None and hasattr(param, 'to'):
-                                    param.data = param.data.to(device)
-                            
-                            # Ensure all model attributes that might contain tensors are on GPU
-                            for name, value in pipe.model.__dict__.items():
-                                if isinstance(value, torch.Tensor) and hasattr(value, 'to'):
-                                    pipe.model.__dict__[name] = value.to(device)
-                            
-                            # Move any additional model components to GPU
-                            if hasattr(pipe.model, 'config'):
-                                for key, value in pipe.model.config.__dict__.items():
-                                    if isinstance(value, torch.Tensor) and hasattr(value, 'to'):
-                                        setattr(pipe.model.config, key, value.to(device))
-                            
-                            # Ensure all model components are in eval mode
-                            pipe.model.eval()
-                            
-                            # Move any additional tensors in the pipeline to GPU
-                            for attr_name in dir(pipe):
-                                attr = getattr(pipe, attr_name)
-                                if isinstance(attr, torch.Tensor) and hasattr(attr, 'to'):
-                                    setattr(pipe, attr_name, attr.to(device))
-                            
-                            # Ensure context is properly shaped and on GPU
-                            if len(context.shape) == 1:
-                                context = context.unsqueeze(0)
-                            context = context.to(device)
-                            
-                            # Ensure all inputs are on the same device
-                            with torch.cuda.device(device):
-                                quantiles, mean = pipe.predict_quantiles(
-                                    context=context,
-                                    prediction_length=actual_prediction_length,
-                                    quantile_levels=[0.1, 0.5, 0.9]
-                                )
+                            # Make prediction
+                            quantiles, mean = pipe.predict_quantiles(
+                                context=context,
+                                prediction_length=actual_prediction_length,
+                                quantile_levels=[0.1, 0.5, 0.9]
+                            )
                         
                         if quantiles is None or mean is None:
                             raise ValueError("Chronos returned empty prediction")
