@@ -316,8 +316,8 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                     # Take the most recent data points
                     normalized_prices = normalized_prices[-min_data_points:]
                 
-                # Reshape for Chronos (batch_size=1, sequence_length, features=1)
-                context = torch.tensor(normalized_prices.reshape(1, -1, 1), dtype=torch.float32)
+                # Convert to tensor and ensure proper shape
+                context = torch.tensor(normalized_prices, dtype=torch.float32)
                 
                 # Make prediction with GPU acceleration
                 pipe = load_pipeline()
@@ -346,16 +346,16 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                         print(f"Attempting prediction with context shape: {context.shape}")
                         print(f"Prediction length: {actual_prediction_length}")
                         
-                        # Convert context to the correct format
-                        context_tensor = context.to(device=pipe.model.device, dtype=torch.float16)
+                        # Move context to the same device as the model
+                        context = context.to(device=pipe.model.device)
                         
-                        # Ensure context is properly formatted
-                        if len(context_tensor.shape) != 3:
-                            raise ValueError(f"Expected 3D tensor, got shape {context_tensor.shape}")
+                        # Ensure context is properly formatted for Chronos
+                        if len(context.shape) == 1:
+                            context = context.unsqueeze(0)  # Add batch dimension
                         
-                        # Use predict_quantiles directly
+                        # Use predict_quantiles with proper formatting
                         quantiles, mean = pipe.predict_quantiles(
-                            context=context_tensor,
+                            context=context,
                             prediction_length=actual_prediction_length,
                             quantile_levels=[0.1, 0.5, 0.9]
                         )
@@ -376,6 +376,14 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                         
                         # Calculate standard deviation from quantiles
                         std_pred = (upper_bound - lower_bound) / (2 * 1.645)  # 90% confidence interval
+                        
+                        # If we had to limit the prediction length, extend the prediction
+                        if actual_prediction_length < prediction_days:
+                            last_pred = mean_pred[-1]
+                            last_std = std_pred[-1]
+                            extension = np.array([last_pred * (1 + np.random.normal(0, last_std, prediction_days - actual_prediction_length))])
+                            mean_pred = np.concatenate([mean_pred, extension])
+                            std_pred = np.concatenate([std_pred, np.full(prediction_days - actual_prediction_length, last_std)])
                         
                     except Exception as e:
                         print(f"Chronos prediction error: {str(e)}")
