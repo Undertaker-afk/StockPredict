@@ -142,6 +142,13 @@ def get_historical_data(symbol: str, timeframe: str = "1d", lookback_days: int =
         if df.empty:
             raise Exception(f"No data available for {symbol} in {timeframe} timeframe")
         
+        # Ensure all required columns are present and numeric
+        required_columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+        for col in required_columns:
+            if col not in df.columns:
+                raise Exception(f"Missing required column: {col}")
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+        
         # Get additional info for structured products with retry mechanism
         def fetch_info():
             info = ticker.info
@@ -151,17 +158,17 @@ def get_historical_data(symbol: str, timeframe: str = "1d", lookback_days: int =
         
         try:
             info = retry_yfinance_request(fetch_info)
-            df['Market_Cap'] = info.get('marketCap', None)
-            df['Sector'] = info.get('sector', None)
-            df['Industry'] = info.get('industry', None)
-            df['Dividend_Yield'] = info.get('dividendYield', None)
+            df['Market_Cap'] = float(info.get('marketCap', 0))
+            df['Sector'] = info.get('sector', 'Unknown')
+            df['Industry'] = info.get('industry', 'Unknown')
+            df['Dividend_Yield'] = float(info.get('dividendYield', 0))
         except Exception as e:
             print(f"Warning: Could not fetch company info for {symbol}: {str(e)}")
             # Set default values for missing info
-            df['Market_Cap'] = None
-            df['Sector'] = None
-            df['Industry'] = None
-            df['Dividend_Yield'] = None
+            df['Market_Cap'] = 0.0
+            df['Sector'] = 'Unknown'
+            df['Industry'] = 'Unknown'
+            df['Dividend_Yield'] = 0.0
         
         # Calculate technical indicators with adjusted windows based on timeframe
         if timeframe == "1d":
@@ -202,7 +209,7 @@ def get_historical_data(symbol: str, timeframe: str = "1d", lookback_days: int =
         df['Avg_Daily_Volume'] = df['Volume'].rolling(window=vol_window, min_periods=1).mean()
         df['Volume_Volatility'] = df['Volume'].rolling(window=vol_window, min_periods=1).std()
         
-        # Fill NaN values using forward fill then backward fill (updated to use ffill/bfill)
+        # Fill NaN values using forward fill then backward fill
         df = df.ffill().bfill()
         
         # Ensure we have enough data points
@@ -222,6 +229,9 @@ def get_historical_data(symbol: str, timeframe: str = "1d", lookback_days: int =
         if len(df) < 2:
             raise Exception(f"Insufficient data points for {symbol} in {timeframe} timeframe")
         
+        # Final check for any remaining None values
+        df = df.fillna(0)
+        
         return df
         
     except Exception as e:
@@ -229,6 +239,8 @@ def get_historical_data(symbol: str, timeframe: str = "1d", lookback_days: int =
 
 def calculate_rsi(prices: pd.Series, period: int = 14) -> pd.Series:
     """Calculate Relative Strength Index"""
+    # Handle None values by forward filling
+    prices = prices.fillna(method='ffill').fillna(method='bfill')
     delta = prices.diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
@@ -237,6 +249,8 @@ def calculate_rsi(prices: pd.Series, period: int = 14) -> pd.Series:
 
 def calculate_macd(prices: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9) -> Tuple[pd.Series, pd.Series]:
     """Calculate MACD and Signal line"""
+    # Handle None values by forward filling
+    prices = prices.fillna(method='ffill').fillna(method='bfill')
     exp1 = prices.ewm(span=fast, adjust=False).mean()
     exp2 = prices.ewm(span=slow, adjust=False).mean()
     macd = exp1 - exp2
@@ -245,6 +259,8 @@ def calculate_macd(prices: pd.Series, fast: int = 12, slow: int = 26, signal: in
 
 def calculate_bollinger_bands(prices: pd.Series, period: int = 20, std_dev: int = 2) -> Tuple[pd.Series, pd.Series, pd.Series]:
     """Calculate Bollinger Bands"""
+    # Handle None values by forward filling
+    prices = prices.fillna(method='ffill').fillna(method='bfill')
     middle_band = prices.rolling(window=period).mean()
     std = prices.rolling(window=period).std()
     upper_band = middle_band + (std * std_dev)
