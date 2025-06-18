@@ -353,96 +353,30 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                         if len(context_tensor.shape) != 3:
                             raise ValueError(f"Expected 3D tensor, got shape {context_tensor.shape}")
                         
-                        # Try with base configuration
-                        try:
-                            print("Trying base configuration...")
-                            # Use the base configuration from the model
-                            prediction = pipe(
-                                context_tensor,
-                                max_length=actual_prediction_length,
-                                num_return_sequences=1,
-                                do_sample=True,
-                                temperature=1.0,
-                                top_p=0.9,
-                                return_dict_in_generate=True,
-                                output_scores=True
-                            )
-                            
-                            if prediction is None:
-                                raise ValueError("Model returned None")
-                            
-                            # Extract the generated sequence
-                            generated_sequence = prediction.sequences[0]
-                            
-                            # Convert to numpy and reshape
-                            prediction_np = generated_sequence.detach().cpu().numpy()
-                            
-                            # Calculate mean and std
-                            mean_pred = scaler.inverse_transform(prediction_np.reshape(-1, 1)).flatten()
-                            std_pred = np.std(prediction_np) * (scaler.data_max_ - scaler.data_min_)
-                            
-                        except Exception as e:
-                            print(f"Base configuration failed: {str(e)}")
-                            print("Falling back to predict_quantiles...")
-                            
-                            # Try with predict_quantiles
-                            try:
-                                quantiles, mean = pipe.predict_quantiles(
-                                    context=context_tensor,
-                                    prediction_length=actual_prediction_length,
-                                    quantile_levels=[0.1, 0.5, 0.9]
-                                )
-                                
-                                if quantiles is None or mean is None:
-                                    raise ValueError("Chronos returned empty prediction")
-                                
-                                print(f"Quantiles shape: {quantiles.shape}, Mean shape: {mean.shape}")
-                                
-                                # Convert to numpy arrays
-                                quantiles = quantiles.detach().cpu().numpy()
-                                mean = mean.detach().cpu().numpy()
-                                
-                                # Denormalize predictions
-                                mean_pred = scaler.inverse_transform(mean.reshape(-1, 1)).flatten()
-                                lower_bound = scaler.inverse_transform(quantiles[0, :, 0].reshape(-1, 1)).flatten()
-                                upper_bound = scaler.inverse_transform(quantiles[0, :, 2].reshape(-1, 1)).flatten()
-                                
-                                # Calculate standard deviation from quantiles
-                                std_pred = (upper_bound - lower_bound) / (2 * 1.645)  # 90% confidence interval
-                                
-                            except Exception as e:
-                                print(f"predict_quantiles failed: {str(e)}")
-                                print("Falling back to predict...")
-                                
-                                # Final fallback to predict
-                                prediction = pipe.predict(
-                                    context=context_tensor,
-                                    prediction_length=actual_prediction_length,
-                                    num_samples=100
-                                )
-                                
-                                if prediction is None:
-                                    raise ValueError("Chronos predict returned None")
-                                    
-                                prediction = prediction.detach().cpu().numpy()
-                                
-                                if prediction.size == 0:
-                                    raise ValueError("Chronos predict returned empty array")
-                                    
-                                print(f"Prediction shape: {prediction.shape}")
-                                
-                                # Calculate mean and std from samples
-                                mean_pred = scaler.inverse_transform(prediction.mean(axis=0).reshape(-1, 1)).flatten()
-                                std_pred = prediction.std(axis=0) * (scaler.data_max_ - scaler.data_min_)
+                        # Use predict_quantiles directly
+                        quantiles, mean = pipe.predict_quantiles(
+                            context=context_tensor,
+                            prediction_length=actual_prediction_length,
+                            quantile_levels=[0.1, 0.5, 0.9]
+                        )
                         
-                        # If we had to limit the prediction length, extend the prediction
-                        if actual_prediction_length < prediction_days:
-                            last_pred = mean_pred[-1]
-                            last_std = std_pred[-1]
-                            extension = np.array([last_pred * (1 + np.random.normal(0, last_std, prediction_days - actual_prediction_length))])
-                            mean_pred = np.concatenate([mean_pred, extension])
-                            std_pred = np.concatenate([std_pred, np.full(prediction_days - actual_prediction_length, last_std)])
-                            
+                        if quantiles is None or mean is None:
+                            raise ValueError("Chronos returned empty prediction")
+                        
+                        print(f"Quantiles shape: {quantiles.shape}, Mean shape: {mean.shape}")
+                        
+                        # Convert to numpy arrays
+                        quantiles = quantiles.detach().cpu().numpy()
+                        mean = mean.detach().cpu().numpy()
+                        
+                        # Denormalize predictions
+                        mean_pred = scaler.inverse_transform(mean.reshape(-1, 1)).flatten()
+                        lower_bound = scaler.inverse_transform(quantiles[0, :, 0].reshape(-1, 1)).flatten()
+                        upper_bound = scaler.inverse_transform(quantiles[0, :, 2].reshape(-1, 1)).flatten()
+                        
+                        # Calculate standard deviation from quantiles
+                        std_pred = (upper_bound - lower_bound) / (2 * 1.645)  # 90% confidence interval
+                        
                     except Exception as e:
                         print(f"Chronos prediction error: {str(e)}")
                         print(f"Error type: {type(e)}")
