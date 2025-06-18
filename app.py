@@ -64,7 +64,8 @@ def load_pipeline():
                 device_map="auto",  # Let the machine choose the best device
                 torch_dtype=torch.float16,  # Use float16 for better memory efficiency
                 low_cpu_mem_usage=True,
-                trust_remote_code=True  # Required for Chronos models
+                trust_remote_code=True,  # Required for Chronos models
+                use_safetensors=True  # Use safetensors for better loading
             )
             # Set model to evaluation mode
             pipeline.model = pipeline.model.eval()
@@ -72,9 +73,13 @@ def load_pipeline():
             for param in pipeline.model.parameters():
                 param.requires_grad = False
             print("Chronos model loaded successfully")
+            print(f"Model device: {next(pipeline.model.parameters()).device}")
+            print(f"Model dtype: {next(pipeline.model.parameters()).dtype}")
         return pipeline
     except Exception as e:
         print(f"Error loading pipeline: {str(e)}")
+        print(f"Error type: {type(e)}")
+        print(f"Error details: {str(e)}")
         raise RuntimeError(f"Failed to load model: {str(e)}")
 
 def is_market_open() -> bool:
@@ -349,9 +354,12 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                 
                 with torch.inference_mode():
                     try:
-                        # Generate predictions using Chronos
+                        print(f"Attempting prediction with context shape: {context.shape}")
+                        print(f"Prediction length: {actual_prediction_length}")
+                        
                         # First try with predict_quantiles
                         try:
+                            print("Trying predict_quantiles...")
                             quantiles, mean = pipe.predict_quantiles(
                                 context=context,
                                 prediction_length=actual_prediction_length,
@@ -360,6 +368,8 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                             
                             if quantiles is None or mean is None:
                                 raise ValueError("Chronos returned empty prediction")
+                            
+                            print(f"Quantiles shape: {quantiles.shape}, Mean shape: {mean.shape}")
                             
                             # Convert to numpy arrays
                             quantiles = quantiles.detach().cpu().numpy()
@@ -374,16 +384,25 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                             std_pred = (upper_bound - lower_bound) / (2 * 1.645)  # 90% confidence interval
                             
                         except Exception as e:
-                            print(f"predict_quantiles failed, trying predict: {str(e)}")
+                            print(f"predict_quantiles failed with error: {str(e)}")
+                            print("Falling back to predict...")
+                            
                             # Fallback to predict if predict_quantiles fails
                             prediction = pipe.predict(
                                 context=context,
                                 prediction_length=actual_prediction_length,
                                 num_samples=100
-                            ).detach().cpu().numpy()
+                            )
                             
-                            if prediction is None or prediction.size == 0:
-                                raise ValueError("Chronos returned empty prediction")
+                            if prediction is None:
+                                raise ValueError("Chronos predict returned None")
+                                
+                            prediction = prediction.detach().cpu().numpy()
+                            
+                            if prediction.size == 0:
+                                raise ValueError("Chronos predict returned empty array")
+                                
+                            print(f"Prediction shape: {prediction.shape}")
                             
                             # Calculate mean and std from samples
                             mean_pred = scaler.inverse_transform(prediction.mean(axis=0).reshape(-1, 1)).flatten()
@@ -399,6 +418,8 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                             
                     except Exception as e:
                         print(f"Chronos prediction error: {str(e)}")
+                        print(f"Error type: {type(e)}")
+                        print(f"Error details: {str(e)}")
                         raise
                 
             except Exception as e:
