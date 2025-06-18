@@ -61,7 +61,7 @@ def load_pipeline():
             print("Loading Chronos model...")
             pipeline = ChronosPipeline.from_pretrained(
                 "amazon/chronos-t5-large",
-                device_map="auto",  # Let the model decide the best device mapping
+                device_map="cuda",  # Force CUDA device mapping
                 torch_dtype=torch.float16,
                 low_cpu_mem_usage=True,
                 trust_remote_code=True,
@@ -313,8 +313,8 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                 pipe = load_pipeline()
                 
                 # Get the model's device and dtype
-                device = next(pipe.model.parameters()).device
-                dtype = next(pipe.model.parameters()).dtype
+                device = torch.device("cuda:0")  # Force CUDA device
+                dtype = torch.float16  # Force float16
                 print(f"Model device: {device}")
                 print(f"Model dtype: {dtype}")
                 
@@ -383,6 +383,44 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                             
                             # Ensure prediction length is on GPU
                             prediction_length = torch.tensor(actual_prediction_length, device=device, dtype=torch.long)
+                            
+                            # Force all model components to GPU
+                            pipe.model = pipe.model.to(device)
+                            pipe.tokenizer = pipe.tokenizer.to(device) if hasattr(pipe, 'tokenizer') else None
+                            
+                            # Ensure all model states are on GPU
+                            if hasattr(pipe.model, 'state_dict'):
+                                state_dict = pipe.model.state_dict()
+                                for key in state_dict:
+                                    if isinstance(state_dict[key], torch.Tensor):
+                                        state_dict[key] = state_dict[key].to(device)
+                                pipe.model.load_state_dict(state_dict)
+                            
+                            # Ensure all model attributes are on GPU
+                            for attr_name in dir(pipe.model):
+                                attr = getattr(pipe.model, attr_name)
+                                if isinstance(attr, torch.Tensor):
+                                    setattr(pipe.model, attr_name, attr.to(device))
+                            
+                            # Ensure all model submodules are on GPU
+                            for name, module in pipe.model.named_modules():
+                                if hasattr(module, 'to'):
+                                    module.to(device)
+                            
+                            # Ensure all model buffers are on GPU
+                            for name, buffer in pipe.model.named_buffers():
+                                if buffer is not None:
+                                    pipe.model.register_buffer(name, buffer.to(device))
+                            
+                            # Ensure all model parameters are on GPU
+                            for name, param in pipe.model.named_parameters():
+                                if param is not None:
+                                    param.data = param.data.to(device)
+                            
+                            # Ensure all model attributes that might contain tensors are on GPU
+                            for name, value in pipe.model.__dict__.items():
+                                if isinstance(value, torch.Tensor):
+                                    pipe.model.__dict__[name] = value.to(device)
                             
                             quantiles, mean = pipe.predict_quantiles(
                                 context=context,
