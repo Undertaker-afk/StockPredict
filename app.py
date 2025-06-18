@@ -423,11 +423,33 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                                 if isinstance(value, torch.Tensor) and hasattr(value, 'to'):
                                     pipe.model.__dict__[name] = value.to(device)
                             
-                            quantiles, mean = pipe.predict_quantiles(
-                                context=context,
-                                prediction_length=actual_prediction_length,
-                                quantile_levels=[0.1, 0.5, 0.9]
-                            )
+                            # Move any additional model components to GPU
+                            if hasattr(pipe.model, 'config'):
+                                for key, value in pipe.model.config.__dict__.items():
+                                    if isinstance(value, torch.Tensor) and hasattr(value, 'to'):
+                                        setattr(pipe.model.config, key, value.to(device))
+                            
+                            # Ensure all model components are in eval mode
+                            pipe.model.eval()
+                            
+                            # Move any additional tensors in the pipeline to GPU
+                            for attr_name in dir(pipe):
+                                attr = getattr(pipe, attr_name)
+                                if isinstance(attr, torch.Tensor) and hasattr(attr, 'to'):
+                                    setattr(pipe, attr_name, attr.to(device))
+                            
+                            # Ensure context is properly shaped and on GPU
+                            if len(context.shape) == 1:
+                                context = context.unsqueeze(0)
+                            context = context.to(device)
+                            
+                            # Ensure all inputs are on the same device
+                            with torch.cuda.device(device):
+                                quantiles, mean = pipe.predict_quantiles(
+                                    context=context,
+                                    prediction_length=actual_prediction_length,
+                                    quantile_levels=[0.1, 0.5, 0.9]
+                                )
                         
                         if quantiles is None or mean is None:
                             raise ValueError("Chronos returned empty prediction")
