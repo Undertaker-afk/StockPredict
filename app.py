@@ -352,29 +352,31 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                         # Move model to evaluation mode
                         pipe.model.eval()
                         
-                        # Ensure all model components are on the same device
-                        pipe.model = pipe.model.to(device)
-                        if hasattr(pipe, 'tokenizer'):
-                            pipe.tokenizer = pipe.tokenizer.to(device)
-                        if hasattr(pipe, 'config'):
-                            pipe.config = pipe.config.to(device)
+                        # Move the main model to GPU but keep distribution head on CPU
+                        if hasattr(pipe.model, 'encoder'):
+                            pipe.model.encoder = pipe.model.encoder.to(device)
+                        if hasattr(pipe.model, 'decoder'):
+                            pipe.model.decoder = pipe.model.decoder.to(device)
+                        if hasattr(pipe.model, 'embed_tokens'):
+                            pipe.model.embed_tokens = pipe.model.embed_tokens.to(device)
+                        if hasattr(pipe.model, 'final_layer_norm'):
+                            pipe.model.final_layer_norm = pipe.model.final_layer_norm.to(device)
                         
-                        # Move all model parameters and buffers to the correct device
-                        for param in pipe.model.parameters():
-                            param.data = param.data.to(device)
-                        for buffer in pipe.model.buffers():
-                            buffer.data = buffer.data.to(device)
-                        
-                        # Ensure the distribution head is properly initialized
-                        if hasattr(pipe.model, 'distribution_head'):
-                            pipe.model.distribution_head = pipe.model.distribution_head.to(device)
+                        # Move all parameters and buffers except distribution head
+                        for name, param in pipe.model.named_parameters():
+                            if 'distribution_head' not in name:
+                                param.data = param.data.to(device)
+                        for name, buffer in pipe.model.named_buffers():
+                            if 'distribution_head' not in name:
+                                buffer.data = buffer.data.to(device)
                         
                         # Use predict_quantiles with proper formatting
-                        quantiles, mean = pipe.predict_quantiles(
-                            context=context,
-                            prediction_length=actual_prediction_length,
-                            quantile_levels=[0.1, 0.5, 0.9]
-                        )
+                        with torch.cuda.amp.autocast():
+                            quantiles, mean = pipe.predict_quantiles(
+                                context=context,
+                                prediction_length=actual_prediction_length,
+                                quantile_levels=[0.1, 0.5, 0.9]
+                            )
                         
                         if quantiles is None or mean is None:
                             raise ValueError("Chronos returned empty prediction")
