@@ -360,8 +360,15 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                         # First try with predict_quantiles
                         try:
                             print("Trying predict_quantiles...")
+                            # Convert context to the correct format
+                            context_tensor = context.to(device=pipe.model.device, dtype=torch.float16)
+                            
+                            # Ensure context is properly formatted
+                            if len(context_tensor.shape) != 3:
+                                raise ValueError(f"Expected 3D tensor, got shape {context_tensor.shape}")
+                            
                             quantiles, mean = pipe.predict_quantiles(
-                                context=context,
+                                context=context_tensor,
                                 prediction_length=actual_prediction_length,
                                 quantile_levels=[0.1, 0.5, 0.9]  # 10th, 50th, and 90th percentiles
                             )
@@ -388,8 +395,11 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                             print("Falling back to predict...")
                             
                             # Fallback to predict if predict_quantiles fails
+                            # Convert context to the correct format
+                            context_tensor = context.to(device=pipe.model.device, dtype=torch.float16)
+                            
                             prediction = pipe.predict(
-                                context=context,
+                                context=context_tensor,
                                 prediction_length=actual_prediction_length,
                                 num_samples=100
                             )
