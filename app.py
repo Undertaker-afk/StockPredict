@@ -51,7 +51,7 @@ def clear_gpu_memory():
         torch.cuda.empty_cache()
         gc.collect()
 
-@spaces.GPU(duration=180)
+# @spaces.GPU(duration=180)
 def load_pipeline():
     """Load the Chronos model with GPU configuration"""
     global pipeline
