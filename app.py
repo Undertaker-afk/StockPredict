@@ -51,9 +51,8 @@ def clear_gpu_memory():
         torch.cuda.empty_cache()
         gc.collect()
 
-@spaces.GPU(duration=180)
 def load_pipeline():
-    """Load the Chronos model with GPU configuration"""
+    """Load the Chronos model without GPU configuration"""
     global pipeline
     try:
         if pipeline is None:
@@ -61,22 +60,18 @@ def load_pipeline():
             print("Loading Chronos model...")
             pipeline = ChronosPipeline.from_pretrained(
                 "amazon/chronos-t5-large",
-                device_map="auto",  # Let the machine choose the best device
-                torch_dtype=torch.float16,  # Use float16 for better memory efficiency
+                device_map="cpu",  # Start with CPU
+                torch_dtype=torch.float16,
                 low_cpu_mem_usage=True,
-                trust_remote_code=True,  # Required for Chronos models
-                use_safetensors=True  # Use safetensors for better loading
+                trust_remote_code=True,
+                use_safetensors=True
             )
             # Set model to evaluation mode
             pipeline.model = pipeline.model.eval()
-            # Move entire model to CUDA
-            pipeline.model = pipeline.model.cuda()
             # Disable gradient computation
             for param in pipeline.model.parameters():
                 param.requires_grad = False
             print("Chronos model loaded successfully")
-            print(f"Model device: {next(pipeline.model.parameters()).device}")
-            print(f"Model dtype: {next(pipeline.model.parameters()).dtype}")
         return pipeline
     except Exception as e:
         print(f"Error loading pipeline: {str(e)}")
@@ -284,7 +279,7 @@ def calculate_bollinger_bands(prices: pd.Series, period: int = 20, std_dev: int 
 @spaces.GPU(duration=180)
 def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5, strategy: str = "chronos") -> Tuple[Dict, go.Figure]:
     """
-    Make prediction using selected strategy.
+    Make prediction using selected strategy with ZeroGPU.
     
     Args:
         symbol (str): Stock symbol
@@ -302,24 +297,20 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
         if strategy == "chronos":
             try:
                 # Prepare data for Chronos
-                # Use Close prices for prediction
                 prices = df['Close'].values
-                
-                # Normalize the data using MinMaxScaler
                 normalized_prices = scaler.fit_transform(prices.reshape(-1, 1)).flatten()
                 
-                # Ensure we have enough data points and pad if necessary
-                min_data_points = 64  # Minimum required by Chronos
+                # Ensure we have enough data points
+                min_data_points = 64
                 if len(normalized_prices) < min_data_points:
-                    # Pad the data with the last value
                     padding = np.full(min_data_points - len(normalized_prices), normalized_prices[-1])
                     normalized_prices = np.concatenate([padding, normalized_prices])
                 elif len(normalized_prices) > min_data_points:
-                    # Take the most recent data points
                     normalized_prices = normalized_prices[-min_data_points:]
                 
-                # Make prediction with GPU acceleration
+                # Load pipeline and move to GPU
                 pipe = load_pipeline()
+                pipe.model = pipe.model.cuda()
                 
                 # Get the model's device and dtype
                 device = next(pipe.model.parameters()).device
@@ -332,21 +323,16 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                 
                 # Adjust prediction length based on timeframe
                 if timeframe == "1d":
-                    max_prediction_length = 64  # Maximum 64 days for daily data
+                    max_prediction_length = 64
                 elif timeframe == "1h":
-                    max_prediction_length = 168  # Maximum 7 days (168 hours) for hourly data
+                    max_prediction_length = 168
                 else:  # 15m
-                    max_prediction_length = 192  # Maximum 2 days (192 15-minute intervals) for 15m data
+                    max_prediction_length = 192
                 
-                # Convert prediction_days to appropriate intervals
-                if timeframe == "1d":
-                    actual_prediction_length = min(prediction_days, max_prediction_length)
-                elif timeframe == "1h":
-                    actual_prediction_length = min(prediction_days * 24, max_prediction_length)
-                else:  # 15m
-                    actual_prediction_length = min(prediction_days * 96, max_prediction_length)
+                actual_prediction_length = min(prediction_days, max_prediction_length) if timeframe == "1d" else \
+                    min(prediction_days * 24, max_prediction_length) if timeframe == "1h" else \
+                    min(prediction_days * 96, max_prediction_length)
                 
-                # Ensure prediction length is at least 1
                 actual_prediction_length = max(1, actual_prediction_length)
                 
                 with torch.inference_mode():
@@ -356,7 +342,7 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                         
                         # Ensure context is properly formatted for Chronos
                         if len(context.shape) == 1:
-                            context = context.unsqueeze(0)  # Add batch dimension
+                            context = context.unsqueeze(0)
                         
                         # Verify device and dtype
                         print(f"Context device: {context.device}")
@@ -395,7 +381,7 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                         upper_bound = scaler.inverse_transform(quantiles[0, :, 2].reshape(-1, 1)).flatten()
                         
                         # Calculate standard deviation from quantiles
-                        std_pred = (upper_bound - lower_bound) / (2 * 1.645)  # 90% confidence interval
+                        std_pred = (upper_bound - lower_bound) / (2 * 1.645)
                         
                         # If we had to limit the prediction length, extend the prediction
                         if actual_prediction_length < prediction_days:
