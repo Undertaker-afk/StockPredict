@@ -58,6 +58,7 @@ def load_pipeline():
     try:
         if pipeline is None:
             clear_gpu_memory()
+            print("Loading Chronos model...")
             pipeline = ChronosPipeline.from_pretrained(
                 "amazon/chronos-t5-large",
                 device_map="auto",  # Let the machine choose the best device
@@ -65,6 +66,7 @@ def load_pipeline():
                 low_cpu_mem_usage=True
             )
             pipeline.model = pipeline.model.eval()
+            print("Chronos model loaded successfully")
         return pipeline
     except Exception as e:
         print(f"Error loading pipeline: {str(e)}")
@@ -240,7 +242,7 @@ def get_historical_data(symbol: str, timeframe: str = "1d", lookback_days: int =
 def calculate_rsi(prices: pd.Series, period: int = 14) -> pd.Series:
     """Calculate Relative Strength Index"""
     # Handle None values by forward filling
-    prices = prices.fillna(method='ffill').fillna(method='bfill')
+    prices = prices.ffill().bfill()
     delta = prices.diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
@@ -250,7 +252,7 @@ def calculate_rsi(prices: pd.Series, period: int = 14) -> pd.Series:
 def calculate_macd(prices: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9) -> Tuple[pd.Series, pd.Series]:
     """Calculate MACD and Signal line"""
     # Handle None values by forward filling
-    prices = prices.fillna(method='ffill').fillna(method='bfill')
+    prices = prices.ffill().bfill()
     exp1 = prices.ewm(span=fast, adjust=False).mean()
     exp2 = prices.ewm(span=slow, adjust=False).mean()
     macd = exp1 - exp2
@@ -260,7 +262,7 @@ def calculate_macd(prices: pd.Series, fast: int = 12, slow: int = 26, signal: in
 def calculate_bollinger_bands(prices: pd.Series, period: int = 20, std_dev: int = 2) -> Tuple[pd.Series, pd.Series, pd.Series]:
     """Calculate Bollinger Bands"""
     # Handle None values by forward filling
-    prices = prices.fillna(method='ffill').fillna(method='bfill')
+    prices = prices.ffill().bfill()
     middle_band = prices.rolling(window=period).mean()
     std = prices.rolling(window=period).std()
     upper_band = middle_band + (std * std_dev)
@@ -330,23 +332,31 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                 actual_prediction_length = max(1, actual_prediction_length)
                 
                 with torch.inference_mode():
-                    prediction = pipe.predict(
-                        context=context,
-                        prediction_length=actual_prediction_length,
-                        num_samples=100 
-                    ).detach().cpu().numpy()
-                
-                # Denormalize predictions
-                mean_pred = scaler.inverse_transform(prediction.mean(axis=0).reshape(-1, 1)).flatten()
-                std_pred = prediction.std(axis=0) * (scaler.data_max_ - scaler.data_min_)
-                
-                # If we had to limit the prediction length, extend the prediction
-                if actual_prediction_length < prediction_days:
-                    last_pred = mean_pred[-1]
-                    last_std = std_pred[-1]
-                    extension = np.array([last_pred * (1 + np.random.normal(0, last_std, prediction_days - actual_prediction_length))])
-                    mean_pred = np.concatenate([mean_pred, extension])
-                    std_pred = np.concatenate([std_pred, np.full(prediction_days - actual_prediction_length, last_std)])
+                    try:
+                        prediction = pipe.predict(
+                            context=context,
+                            prediction_length=actual_prediction_length,
+                            num_samples=100 
+                        ).detach().cpu().numpy()
+                        
+                        if prediction is None or prediction.size == 0:
+                            raise ValueError("Chronos returned empty prediction")
+                            
+                        # Denormalize predictions
+                        mean_pred = scaler.inverse_transform(prediction.mean(axis=0).reshape(-1, 1)).flatten()
+                        std_pred = prediction.std(axis=0) * (scaler.data_max_ - scaler.data_min_)
+                        
+                        # If we had to limit the prediction length, extend the prediction
+                        if actual_prediction_length < prediction_days:
+                            last_pred = mean_pred[-1]
+                            last_std = std_pred[-1]
+                            extension = np.array([last_pred * (1 + np.random.normal(0, last_std, prediction_days - actual_prediction_length))])
+                            mean_pred = np.concatenate([mean_pred, extension])
+                            std_pred = np.concatenate([std_pred, np.full(prediction_days - actual_prediction_length, last_std)])
+                            
+                    except Exception as e:
+                        print(f"Chronos prediction error: {str(e)}")
+                        raise
                 
             except Exception as e:
                 print(f"Chronos prediction failed: {str(e)}")
