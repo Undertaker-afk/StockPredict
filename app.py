@@ -533,11 +533,59 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                 
                 # If we had to limit the prediction length, extend the prediction
                 if actual_prediction_length < prediction_days:
-                    last_pred = mean_pred[-1]
-                    last_std = std_pred[-1]
-                    extension = np.array([last_pred * (1 + np.random.normal(0, last_std, prediction_days - actual_prediction_length))])
-                    mean_pred = np.concatenate([mean_pred, extension])
-                    std_pred = np.concatenate([std_pred, np.full(prediction_days - actual_prediction_length, last_std)])
+                    # Initialize arrays for extended predictions
+                    extended_mean_pred = mean_pred.copy()
+                    extended_std_pred = std_pred.copy()
+                    
+                    # Calculate the number of extension steps needed
+                    remaining_days = prediction_days - actual_prediction_length
+                    steps_needed = (remaining_days + actual_prediction_length - 1) // actual_prediction_length
+                    
+                    for step in range(steps_needed):
+                        # Use the last window_size points as context for next prediction
+                        window_size = min(64, len(extended_mean_pred))
+                        context_window = extended_mean_pred[-window_size:]
+                        
+                        # Normalize the context window
+                        normalized_context = scaler.fit_transform(context_window.reshape(-1, 1)).flatten()
+                        
+                        # Convert to tensor and ensure proper shape
+                        context = torch.tensor(normalized_context, dtype=dtype, device=device)
+                        if len(context.shape) == 1:
+                            context = context.unsqueeze(0)
+                        
+                        # Make prediction for next window
+                        with torch.amp.autocast('cuda'):
+                            next_quantiles, next_mean = pipe.predict_quantiles(
+                                context=context,
+                                prediction_length=min(actual_prediction_length, remaining_days),
+                                quantile_levels=[0.1, 0.5, 0.9]
+                            )
+                        
+                        # Convert predictions to numpy and denormalize
+                        next_mean = next_mean.detach().cpu().numpy()
+                        next_quantiles = next_quantiles.detach().cpu().numpy()
+                        
+                        # Denormalize predictions
+                        next_mean_pred = scaler.inverse_transform(next_mean.reshape(-1, 1)).flatten()
+                        next_lower = scaler.inverse_transform(next_quantiles[0, :, 0].reshape(-1, 1)).flatten()
+                        next_upper = scaler.inverse_transform(next_quantiles[0, :, 2].reshape(-1, 1)).flatten()
+                        
+                        # Calculate standard deviation
+                        next_std_pred = (next_upper - next_lower) / (2 * 1.645)
+                        
+                        # Append predictions
+                        extended_mean_pred = np.concatenate([extended_mean_pred, next_mean_pred])
+                        extended_std_pred = np.concatenate([extended_std_pred, next_std_pred])
+                        
+                        # Update remaining days
+                        remaining_days -= len(next_mean_pred)
+                        if remaining_days <= 0:
+                            break
+                    
+                    # Trim to exact prediction length if needed
+                    mean_pred = extended_mean_pred[:prediction_days]
+                    std_pred = extended_std_pred[:prediction_days]
                 
             except Exception as e:
                 print(f"Chronos prediction error: {str(e)}")
