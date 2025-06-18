@@ -323,15 +323,22 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                 
                 # Adjust prediction length based on timeframe
                 if timeframe == "1d":
-                    max_prediction_length = 64
+                    max_prediction_length = 64  # Chronos maximum
+                    window_size = 64  # Use full context window
                 elif timeframe == "1h":
-                    max_prediction_length = 168
+                    max_prediction_length = 64  # Chronos maximum
+                    window_size = 64  # Use full context window
                 else:  # 15m
-                    max_prediction_length = 192
+                    max_prediction_length = 64  # Chronos maximum
+                    window_size = 64  # Use full context window
                 
-                actual_prediction_length = min(prediction_days, max_prediction_length) if timeframe == "1d" else \
-                    min(prediction_days * 24, max_prediction_length) if timeframe == "1h" else \
-                    min(prediction_days * 96, max_prediction_length)
+                # Calculate actual prediction length based on timeframe
+                if timeframe == "1d":
+                    actual_prediction_length = min(prediction_days, max_prediction_length)
+                elif timeframe == "1h":
+                    actual_prediction_length = min(prediction_days * 24, max_prediction_length)
+                else:  # 15m
+                    actual_prediction_length = min(prediction_days * 96, max_prediction_length)
                 
                 actual_prediction_length = max(1, actual_prediction_length)
                 
@@ -543,7 +550,6 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                     
                     for step in range(steps_needed):
                         # Use the last window_size points as context for next prediction
-                        window_size = min(64, len(extended_mean_pred))
                         context_window = extended_mean_pred[-window_size:]
                         
                         # Normalize the context window
@@ -554,11 +560,19 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                         if len(context.shape) == 1:
                             context = context.unsqueeze(0)
                         
+                        # Calculate next prediction length based on timeframe
+                        if timeframe == "1d":
+                            next_length = min(max_prediction_length, remaining_days)
+                        elif timeframe == "1h":
+                            next_length = min(max_prediction_length, remaining_days * 24)
+                        else:  # 15m
+                            next_length = min(max_prediction_length, remaining_days * 96)
+                        
                         # Make prediction for next window
                         with torch.amp.autocast('cuda'):
                             next_quantiles, next_mean = pipe.predict_quantiles(
                                 context=context,
-                                prediction_length=min(actual_prediction_length, remaining_days),
+                                prediction_length=next_length,
                                 quantile_levels=[0.1, 0.5, 0.9]
                             )
                         
@@ -574,18 +588,37 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                         # Calculate standard deviation
                         next_std_pred = (next_upper - next_lower) / (2 * 1.645)
                         
+                        # Apply exponential smoothing to reduce prediction drift
+                        if step > 0:
+                            alpha = 0.3  # Smoothing factor
+                            next_mean_pred = alpha * next_mean_pred + (1 - alpha) * extended_mean_pred[-len(next_mean_pred):]
+                            next_std_pred = alpha * next_std_pred + (1 - alpha) * extended_std_pred[-len(next_std_pred):]
+                        
                         # Append predictions
                         extended_mean_pred = np.concatenate([extended_mean_pred, next_mean_pred])
                         extended_std_pred = np.concatenate([extended_std_pred, next_std_pred])
                         
                         # Update remaining days
-                        remaining_days -= len(next_mean_pred)
+                        if timeframe == "1d":
+                            remaining_days -= len(next_mean_pred)
+                        elif timeframe == "1h":
+                            remaining_days -= len(next_mean_pred) / 24
+                        else:  # 15m
+                            remaining_days -= len(next_mean_pred) / 96
+                        
                         if remaining_days <= 0:
                             break
                     
                     # Trim to exact prediction length if needed
-                    mean_pred = extended_mean_pred[:prediction_days]
-                    std_pred = extended_std_pred[:prediction_days]
+                    if timeframe == "1d":
+                        mean_pred = extended_mean_pred[:prediction_days]
+                        std_pred = extended_std_pred[:prediction_days]
+                    elif timeframe == "1h":
+                        mean_pred = extended_mean_pred[:prediction_days * 24]
+                        std_pred = extended_std_pred[:prediction_days * 24]
+                    else:  # 15m
+                        mean_pred = extended_mean_pred[:prediction_days * 96]
+                        std_pred = extended_std_pred[:prediction_days * 96]
                 
             except Exception as e:
                 print(f"Chronos prediction error: {str(e)}")
