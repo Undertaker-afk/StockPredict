@@ -366,11 +366,11 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                         for module in pipe.model.modules():
                             if hasattr(module, 'register_buffer'):
                                 for name, buffer in module._buffers.items():
-                                    if buffer is not None:
+                                    if buffer is not None and hasattr(buffer, 'to'):
                                         module._buffers[name] = buffer.to(device)
                             if hasattr(module, 'register_parameter'):
                                 for name, param in module._parameters.items():
-                                    if param is not None:
+                                    if param is not None and hasattr(param, 'to'):
                                         module._parameters[name] = param.to(device)
                         
                         # Use predict_quantiles with proper formatting
@@ -386,7 +386,8 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                             
                             # Force all model components to GPU
                             pipe.model = pipe.model.to(device)
-                            pipe.tokenizer = pipe.tokenizer.to(device) if hasattr(pipe, 'tokenizer') else None
+                            if hasattr(pipe, 'tokenizer') and hasattr(pipe.tokenizer, 'to'):
+                                pipe.tokenizer = pipe.tokenizer.to(device)
                             
                             # Ensure all model states are on GPU
                             if hasattr(pipe.model, 'state_dict'):
@@ -399,7 +400,7 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                             # Ensure all model attributes are on GPU
                             for attr_name in dir(pipe.model):
                                 attr = getattr(pipe.model, attr_name)
-                                if isinstance(attr, torch.Tensor):
+                                if isinstance(attr, torch.Tensor) and hasattr(attr, 'to'):
                                     setattr(pipe.model, attr_name, attr.to(device))
                             
                             # Ensure all model submodules are on GPU
@@ -409,17 +410,17 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                             
                             # Ensure all model buffers are on GPU
                             for name, buffer in pipe.model.named_buffers():
-                                if buffer is not None:
+                                if buffer is not None and hasattr(buffer, 'to'):
                                     pipe.model.register_buffer(name, buffer.to(device))
                             
                             # Ensure all model parameters are on GPU
                             for name, param in pipe.model.named_parameters():
-                                if param is not None:
+                                if param is not None and hasattr(param, 'to'):
                                     param.data = param.data.to(device)
                             
                             # Ensure all model attributes that might contain tensors are on GPU
                             for name, value in pipe.model.__dict__.items():
-                                if isinstance(value, torch.Tensor):
+                                if isinstance(value, torch.Tensor) and hasattr(value, 'to'):
                                     pipe.model.__dict__[name] = value.to(device)
                             
                             quantiles, mean = pipe.predict_quantiles(
