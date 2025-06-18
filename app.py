@@ -107,7 +107,7 @@ def get_next_trading_day() -> datetime:
 
 def get_historical_data(symbol: str, timeframe: str = "1d", lookback_days: int = 365) -> pd.DataFrame:
     """
-    Fetch historical data using yfinance.
+    Fetch historical data using yfinance with enhanced support for intraday data.
     
     Args:
         symbol (str): The stock symbol (e.g., 'AAPL')
@@ -131,11 +131,11 @@ def get_historical_data(symbol: str, timeframe: str = "1d", lookback_days: int =
         }
         interval = tf_map.get(timeframe, "1d")
         
-        # Adjust lookback period based on timeframe
+        # Adjust lookback period based on timeframe and yfinance limits
         if timeframe == "1h":
-            lookback_days = min(lookback_days, 30)  # Yahoo limits hourly data to 30 days
+            lookback_days = min(lookback_days, 60)  # Yahoo allows up to 60 days for hourly data
         elif timeframe == "15m":
-            lookback_days = min(lookback_days, 5)   # Yahoo limits 15m data to 5 days
+            lookback_days = min(lookback_days, 7)   # Yahoo allows up to 7 days for 15m data
         
         # Calculate date range
         end_date = datetime.now()
@@ -145,7 +145,16 @@ def get_historical_data(symbol: str, timeframe: str = "1d", lookback_days: int =
         ticker = yf.Ticker(symbol)
         
         def fetch_history():
-            return ticker.history(start=start_date, end=end_date, interval=interval)
+            return ticker.history(
+                start=start_date, 
+                end=end_date, 
+                interval=interval,
+                prepost=True,  # Include pre/post market data for intraday
+                actions=True,  # Include dividends and splits
+                auto_adjust=True,  # Automatically adjust for splits
+                back_adjust=True,  # Back-adjust data for splits
+                repair=True  # Repair missing data points
+            )
         
         df = retry_yfinance_request(fetch_history)
         
@@ -172,6 +181,23 @@ def get_historical_data(symbol: str, timeframe: str = "1d", lookback_days: int =
             df['Sector'] = info.get('sector', 'Unknown')
             df['Industry'] = info.get('industry', 'Unknown')
             df['Dividend_Yield'] = float(info.get('dividendYield', 0))
+            
+            # Add additional company metrics
+            df['Enterprise_Value'] = float(info.get('enterpriseValue', 0))
+            df['P/E_Ratio'] = float(info.get('trailingPE', 0))
+            df['Forward_P/E'] = float(info.get('forwardPE', 0))
+            df['PEG_Ratio'] = float(info.get('pegRatio', 0))
+            df['Price_to_Book'] = float(info.get('priceToBook', 0))
+            df['Price_to_Sales'] = float(info.get('priceToSalesTrailing12Months', 0))
+            df['Return_on_Equity'] = float(info.get('returnOnEquity', 0))
+            df['Return_on_Assets'] = float(info.get('returnOnAssets', 0))
+            df['Debt_to_Equity'] = float(info.get('debtToEquity', 0))
+            df['Current_Ratio'] = float(info.get('currentRatio', 0))
+            df['Quick_Ratio'] = float(info.get('quickRatio', 0))
+            df['Gross_Margin'] = float(info.get('grossMargins', 0))
+            df['Operating_Margin'] = float(info.get('operatingMargins', 0))
+            df['Net_Margin'] = float(info.get('netIncomeToCommon', 0))
+            
         except Exception as e:
             print(f"Warning: Could not fetch company info for {symbol}: {str(e)}")
             # Set default values for missing info
@@ -179,6 +205,20 @@ def get_historical_data(symbol: str, timeframe: str = "1d", lookback_days: int =
             df['Sector'] = 'Unknown'
             df['Industry'] = 'Unknown'
             df['Dividend_Yield'] = 0.0
+            df['Enterprise_Value'] = 0.0
+            df['P/E_Ratio'] = 0.0
+            df['Forward_P/E'] = 0.0
+            df['PEG_Ratio'] = 0.0
+            df['Price_to_Book'] = 0.0
+            df['Price_to_Sales'] = 0.0
+            df['Return_on_Equity'] = 0.0
+            df['Return_on_Assets'] = 0.0
+            df['Debt_to_Equity'] = 0.0
+            df['Current_Ratio'] = 0.0
+            df['Quick_Ratio'] = 0.0
+            df['Gross_Margin'] = 0.0
+            df['Operating_Margin'] = 0.0
+            df['Net_Margin'] = 0.0
         
         # Calculate technical indicators with adjusted windows based on timeframe
         if timeframe == "1d":
@@ -219,6 +259,21 @@ def get_historical_data(symbol: str, timeframe: str = "1d", lookback_days: int =
         df['Avg_Daily_Volume'] = df['Volume'].rolling(window=vol_window, min_periods=1).mean()
         df['Volume_Volatility'] = df['Volume'].rolling(window=vol_window, min_periods=1).std()
         
+        # Calculate additional intraday metrics for shorter timeframes
+        if timeframe in ["1h", "15m"]:
+            # Intraday volatility
+            df['Intraday_High_Low'] = (df['High'] - df['Low']) / df['Close']
+            df['Intraday_Volatility'] = df['Intraday_High_Low'].rolling(window=vol_window, min_periods=1).mean()
+            
+            # Volume analysis
+            df['Volume_Price_Trend'] = (df['Volume'] * df['Returns']).rolling(window=vol_window, min_periods=1).sum()
+            df['Volume_SMA'] = df['Volume'].rolling(window=vol_window, min_periods=1).mean()
+            df['Volume_Ratio'] = df['Volume'] / df['Volume_SMA']
+            
+            # Price momentum
+            df['Price_Momentum'] = df['Close'].pct_change(periods=5)
+            df['Volume_Momentum'] = df['Volume'].pct_change(periods=5)
+        
         # Fill NaN values using forward fill then backward fill
         df = df.ffill().bfill()
         
@@ -229,7 +284,16 @@ def get_historical_data(symbol: str, timeframe: str = "1d", lookback_days: int =
             extended_start_date = start_date - timedelta(days=min_required_points - len(df))
             
             def fetch_extended_history():
-                return ticker.history(start=extended_start_date, end=start_date, interval=interval)
+                return ticker.history(
+                    start=extended_start_date, 
+                    end=start_date, 
+                    interval=interval,
+                    prepost=True,
+                    actions=True,
+                    auto_adjust=True,
+                    back_adjust=True,
+                    repair=True
+                )
             
             extended_df = retry_yfinance_request(fetch_extended_history)
             if not extended_df.empty:
@@ -985,7 +1049,7 @@ def create_interface():
                         )
                         hourly_lookback_days = gr.Slider(
                             minimum=1,
-                            maximum=30,  # Limited to 30 days for hourly data
+                            maximum=60,  # Enhanced to 60 days for hourly data
                             value=14,
                             step=1,
                             label="Historical Lookback (Days)"
@@ -997,10 +1061,14 @@ def create_interface():
                         )
                         hourly_predict_btn = gr.Button("Analyze Stock")
                         gr.Markdown("""
-                        **Note for Hourly Analysis:**
-                        - Maximum lookback period: 30 days (Yahoo Finance limit)
-                        - Maximum prediction period: 7 days
-                        - Data is only available during market hours
+                        **Hourly Analysis Features:**
+                        - **Extended Data Range**: Up to 60 days of historical data
+                        - **Pre/Post Market Data**: Includes extended hours trading data
+                        - **Auto-Adjusted Data**: Automatically adjusted for splits and dividends
+                        - **Metrics**: Intraday volatility, volume analysis, and momentum indicators
+                        - **Comprehensive Financial Ratios**: P/E, PEG, Price-to-Book, and more
+                        - **Maximum prediction period**: 7 days
+                        - **Data available during market hours only**
                         """)
                     
                     with gr.Column():
@@ -1012,10 +1080,10 @@ def create_interface():
                         gr.Markdown("### Structured Product Metrics")
                         hourly_metrics = gr.JSON(label="Product Metrics")
                         
-                        gr.Markdown("### Risk Analysis")
+                        gr.Markdown("### Comprehensive Risk Analysis")
                         hourly_risk_metrics = gr.JSON(label="Risk Metrics")
                         
-                        gr.Markdown("### Sector Analysis")
+                        gr.Markdown("### Sector & Financial Analysis")
                         hourly_sector_metrics = gr.JSON(label="Sector Metrics")
             
             # 15-Minute Analysis Tab
@@ -1032,7 +1100,7 @@ def create_interface():
                         )
                         min15_lookback_days = gr.Slider(
                             minimum=1,
-                            maximum=5,  # Yahoo Finance limit for 15-minute data
+                            maximum=7,  # 7 days for 15-minute data
                             value=3,
                             step=1,
                             label="Historical Lookback (Days)"
@@ -1044,11 +1112,15 @@ def create_interface():
                         )
                         min15_predict_btn = gr.Button("Analyze Stock")
                         gr.Markdown("""
-                        **Note for 15-Minute Analysis:**
-                        - Maximum lookback period: 5 days (Yahoo Finance limit)
-                        - Maximum prediction period: 2 days
-                        - Data is only available during market hours
-                        - Requires at least 64 data points for Chronos predictions
+                        **15-Minute Analysis Features:**
+                        - **Data Range**: Up to 7 days of historical data (vs 5 days previously)
+                        - **High-Frequency Metrics**: Intraday volatility, volume-price trends, momentum analysis
+                        - **Pre/Post Market Data**: Includes extended hours trading data
+                        - **Auto-Adjusted Data**: Automatically adjusted for splits and dividends
+                        - **Enhanced Technical Indicators**: Optimized for short-term trading
+                        - **Maximum prediction period**: 2 days
+                        - **Requires at least 64 data points for Chronos predictions**
+                        - **Data available during market hours only**
                         """)
                     
                     with gr.Column():
@@ -1063,7 +1135,7 @@ def create_interface():
                         gr.Markdown("### Risk Analysis")
                         min15_risk_metrics = gr.JSON(label="Risk Metrics")
                         
-                        gr.Markdown("### Sector Analysis")
+                        gr.Markdown("### Sector & Financial Analysis")
                         min15_sector_metrics = gr.JSON(label="Sector Metrics")
         
         def analyze_stock(symbol, timeframe, prediction_days, lookback_days, strategy):
@@ -1080,7 +1152,13 @@ def create_interface():
                     "Industry": df['Industry'].iloc[-1],
                     "Dividend_Yield": df['Dividend_Yield'].iloc[-1],
                     "Avg_Daily_Volume": df['Avg_Daily_Volume'].iloc[-1],
-                    "Volume_Volatility": df['Volume_Volatility'].iloc[-1]
+                    "Volume_Volatility": df['Volume_Volatility'].iloc[-1],
+                    "Enterprise_Value": df['Enterprise_Value'].iloc[-1],
+                    "P/E_Ratio": df['P/E_Ratio'].iloc[-1],
+                    "Forward_P/E": df['Forward_P/E'].iloc[-1],
+                    "PEG_Ratio": df['PEG_Ratio'].iloc[-1],
+                    "Price_to_Book": df['Price_to_Book'].iloc[-1],
+                    "Price_to_Sales": df['Price_to_Sales'].iloc[-1]
                 }
                 
                 # Calculate risk metrics
@@ -1089,7 +1167,12 @@ def create_interface():
                     "Max_Drawdown": df['Max_Drawdown'].iloc[-1],
                     "Current_Drawdown": df['Drawdown'].iloc[-1],
                     "Sharpe_Ratio": (df['Returns'].mean() * 252) / (df['Returns'].std() * np.sqrt(252)),
-                    "Sortino_Ratio": (df['Returns'].mean() * 252) / (df['Returns'][df['Returns'] < 0].std() * np.sqrt(252))
+                    "Sortino_Ratio": (df['Returns'].mean() * 252) / (df['Returns'][df['Returns'] < 0].std() * np.sqrt(252)),
+                    "Return_on_Equity": df['Return_on_Equity'].iloc[-1],
+                    "Return_on_Assets": df['Return_on_Assets'].iloc[-1],
+                    "Debt_to_Equity": df['Debt_to_Equity'].iloc[-1],
+                    "Current_Ratio": df['Current_Ratio'].iloc[-1],
+                    "Quick_Ratio": df['Quick_Ratio'].iloc[-1]
                 }
                 
                 # Calculate sector metrics
@@ -1097,8 +1180,22 @@ def create_interface():
                     "Sector": df['Sector'].iloc[-1],
                     "Industry": df['Industry'].iloc[-1],
                     "Market_Cap_Rank": "Large" if df['Market_Cap'].iloc[-1] > 1e10 else "Mid" if df['Market_Cap'].iloc[-1] > 1e9 else "Small",
-                    "Liquidity_Score": "High" if df['Avg_Daily_Volume'].iloc[-1] > 1e6 else "Medium" if df['Avg_Daily_Volume'].iloc[-1] > 1e5 else "Low"
+                    "Liquidity_Score": "High" if df['Avg_Daily_Volume'].iloc[-1] > 1e6 else "Medium" if df['Avg_Daily_Volume'].iloc[-1] > 1e5 else "Low",
+                    "Gross_Margin": df['Gross_Margin'].iloc[-1],
+                    "Operating_Margin": df['Operating_Margin'].iloc[-1],
+                    "Net_Margin": df['Net_Margin'].iloc[-1]
                 }
+                
+                # Add intraday-specific metrics for shorter timeframes
+                if timeframe in ["1h", "15m"]:
+                    intraday_metrics = {
+                        "Intraday_Volatility": df['Intraday_Volatility'].iloc[-1] if 'Intraday_Volatility' in df.columns else 0,
+                        "Volume_Ratio": df['Volume_Ratio'].iloc[-1] if 'Volume_Ratio' in df.columns else 0,
+                        "Price_Momentum": df['Price_Momentum'].iloc[-1] if 'Price_Momentum' in df.columns else 0,
+                        "Volume_Momentum": df['Volume_Momentum'].iloc[-1] if 'Volume_Momentum' in df.columns else 0,
+                        "Volume_Price_Trend": df['Volume_Price_Trend'].iloc[-1] if 'Volume_Price_Trend' in df.columns else 0
+                    }
+                    product_metrics.update(intraday_metrics)
                 
                 return signals, fig, product_metrics, risk_metrics, sector_metrics
             except Exception as e:
@@ -1150,7 +1247,7 @@ def create_interface():
             Args:
                 s (str): Stock symbol (e.g., "AAPL", "MSFT", "GOOGL")
                 pd (int): Number of days to predict (1-7)
-                ld (int): Historical lookback period in days (1-30)
+                ld (int): Historical lookback period in days (1-60)
                 st (str): Prediction strategy to use ("chronos" or "technical")
 
             Returns:
@@ -1181,7 +1278,7 @@ def create_interface():
             Args:
                 s (str): Stock symbol (e.g., "AAPL", "MSFT", "GOOGL")
                 pd (int): Number of days to predict (1-2)
-                ld (int): Historical lookback period in days (1-5)
+                ld (int): Historical lookback period in days (1-7)
                 st (str): Prediction strategy to use ("chronos" or "technical")
 
             Returns:
