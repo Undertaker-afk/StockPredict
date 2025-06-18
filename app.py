@@ -60,7 +60,7 @@ def load_pipeline():
             print("Loading Chronos model...")
             pipeline = ChronosPipeline.from_pretrained(
                 "amazon/chronos-t5-large",
-                device_map="cpu",  # Start with CPU
+                device_map="auto",  # Let the model decide the best device mapping
                 torch_dtype=torch.float16,
                 low_cpu_mem_usage=True,
                 trust_remote_code=True,
@@ -364,6 +364,10 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                             param.data = param.data.to(device)
                         for buffer in pipe.model.buffers():
                             buffer.data = buffer.data.to(device)
+                        
+                        # Ensure the distribution head is properly initialized
+                        if hasattr(pipe.model, 'distribution_head'):
+                            pipe.model.distribution_head = pipe.model.distribution_head.to(device)
                         
                         # Use predict_quantiles with proper formatting
                         quantiles, mean = pipe.predict_quantiles(
