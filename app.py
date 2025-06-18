@@ -63,9 +63,14 @@ def load_pipeline():
                 "amazon/chronos-t5-large",
                 device_map="auto",  # Let the machine choose the best device
                 torch_dtype=torch.float16,  # Use float16 for better memory efficiency
-                low_cpu_mem_usage=True
+                low_cpu_mem_usage=True,
+                trust_remote_code=True  # Required for Chronos models
             )
+            # Set model to evaluation mode
             pipeline.model = pipeline.model.eval()
+            # Disable gradient computation
+            for param in pipeline.model.parameters():
+                param.requires_grad = False
             print("Chronos model loaded successfully")
         return pipeline
     except Exception as e:
@@ -293,8 +298,13 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                 # Use Close prices instead of returns for better prediction
                 prices = df['Close'].values
                 
+                # Calculate returns for additional context
+                returns = np.diff(prices) / prices[:-1]
+                returns = np.insert(returns, 0, 0)  # Add 0 for first day
+                
                 # Normalize the data using MinMaxScaler
                 normalized_prices = scaler.fit_transform(prices.reshape(-1, 1)).flatten()
+                normalized_returns = scaler.fit_transform(returns.reshape(-1, 1)).flatten()
                 
                 # Ensure we have enough data points and pad if necessary
                 min_data_points = 64  # Minimum required by Chronos
@@ -302,12 +312,18 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                     # Pad the data with the last value
                     padding = np.full(min_data_points - len(normalized_prices), normalized_prices[-1])
                     normalized_prices = np.concatenate([padding, normalized_prices])
+                    padding_returns = np.full(min_data_points - len(normalized_returns), normalized_returns[-1])
+                    normalized_returns = np.concatenate([padding_returns, normalized_returns])
                 elif len(normalized_prices) > min_data_points:
                     # Take the most recent data points
                     normalized_prices = normalized_prices[-min_data_points:]
+                    normalized_returns = normalized_returns[-min_data_points:]
                 
-                # Reshape for Chronos (batch_size=1, sequence_length, features=1)
-                context = torch.tensor(normalized_prices.reshape(1, -1, 1), dtype=torch.float32)
+                # Combine price and returns data
+                combined_data = np.column_stack((normalized_prices, normalized_returns))
+                
+                # Reshape for Chronos (batch_size=1, sequence_length, features=2)
+                context = torch.tensor(combined_data.reshape(1, -1, 2), dtype=torch.float32)
                 
                 # Make prediction with GPU acceleration
                 pipe = load_pipeline()
@@ -333,18 +349,39 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                 
                 with torch.inference_mode():
                     try:
-                        prediction = pipe.predict(
-                            context=context,
-                            prediction_length=actual_prediction_length,
-                            num_samples=100 
-                        ).detach().cpu().numpy()
+                        # Generate multiple predictions for ensemble
+                        num_ensemble = 5
+                        all_predictions = []
                         
-                        if prediction is None or prediction.size == 0:
-                            raise ValueError("Chronos returned empty prediction")
+                        for _ in range(num_ensemble):
+                            # Use predict_quantiles for probabilistic forecasts
+                            quantiles, mean = pipe.predict_quantiles(
+                                context=context,
+                                prediction_length=actual_prediction_length,
+                                quantile_levels=[0.1, 0.5, 0.9]  # 10th, 50th, and 90th percentiles
+                            )
                             
+                            if quantiles is None or mean is None:
+                                raise ValueError("Chronos returned empty prediction")
+                            
+                            # Convert to numpy arrays
+                            quantiles = quantiles.detach().cpu().numpy()
+                            mean = mean.detach().cpu().numpy()
+                            
+                            # Store predictions
+                            all_predictions.append((quantiles, mean))
+                        
+                        # Ensemble the predictions
+                        ensemble_quantiles = np.mean([p[0] for p in all_predictions], axis=0)
+                        ensemble_mean = np.mean([p[1] for p in all_predictions], axis=0)
+                        
                         # Denormalize predictions
-                        mean_pred = scaler.inverse_transform(prediction.mean(axis=0).reshape(-1, 1)).flatten()
-                        std_pred = prediction.std(axis=0) * (scaler.data_max_ - scaler.data_min_)
+                        mean_pred = scaler.inverse_transform(ensemble_mean.reshape(-1, 1)).flatten()
+                        lower_bound = scaler.inverse_transform(ensemble_quantiles[0, :, 0].reshape(-1, 1)).flatten()
+                        upper_bound = scaler.inverse_transform(ensemble_quantiles[0, :, 2].reshape(-1, 1)).flatten()
+                        
+                        # Calculate standard deviation from quantiles
+                        std_pred = (upper_bound - lower_bound) / (2 * 1.645)  # 90% confidence interval
                         
                         # If we had to limit the prediction length, extend the prediction
                         if actual_prediction_length < prediction_days:
