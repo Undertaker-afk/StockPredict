@@ -311,24 +311,6 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                 # Load pipeline and move to GPU
                 pipe = load_pipeline()
                 
-                # Move entire model and its components to CUDA
-                pipe.model = pipe.model.cuda()
-                
-                # Move all model parameters and buffers to CUDA
-                for param in pipe.model.parameters():
-                    param.data = param.data.cuda()
-                for buffer in pipe.model.buffers():
-                    buffer.data = buffer.data.cuda()
-                
-                # Move all submodules to CUDA
-                for module in pipe.model.modules():
-                    module.to('cuda')
-                    # Move any internal states or buffers
-                    if hasattr(module, '_buffers'):
-                        for buffer in module._buffers.values():
-                            if buffer is not None:
-                                buffer.data = buffer.data.cuda()
-                
                 # Get the model's device and dtype
                 device = next(pipe.model.parameters()).device
                 dtype = next(pipe.model.parameters()).dtype
@@ -370,19 +352,25 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                         # Move model to evaluation mode
                         pipe.model.eval()
                         
-                        # Ensure pipeline components are on the correct device
+                        # Ensure all model components are on the same device
+                        pipe.model = pipe.model.to(device)
                         if hasattr(pipe, 'tokenizer'):
                             pipe.tokenizer = pipe.tokenizer.to(device)
                         if hasattr(pipe, 'config'):
                             pipe.config = pipe.config.to(device)
                         
+                        # Move all model parameters and buffers to the correct device
+                        for param in pipe.model.parameters():
+                            param.data = param.data.to(device)
+                        for buffer in pipe.model.buffers():
+                            buffer.data = buffer.data.to(device)
+                        
                         # Use predict_quantiles with proper formatting
-                        with torch.cuda.device(device):
-                            quantiles, mean = pipe.predict_quantiles(
-                                context=context,
-                                prediction_length=actual_prediction_length,
-                                quantile_levels=[0.1, 0.5, 0.9]
-                            )
+                        quantiles, mean = pipe.predict_quantiles(
+                            context=context,
+                            prediction_length=actual_prediction_length,
+                            quantile_levels=[0.1, 0.5, 0.9]
+                        )
                         
                         if quantiles is None or mean is None:
                             raise ValueError("Chronos returned empty prediction")
