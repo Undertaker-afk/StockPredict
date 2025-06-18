@@ -377,6 +377,13 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                         with torch.amp.autocast('cuda'):
                             # Ensure all inputs are on GPU
                             context = context.to(device)
+                            
+                            # Move quantile levels to GPU
+                            quantile_levels = torch.tensor([0.1, 0.5, 0.9], device=device, dtype=dtype)
+                            
+                            # Ensure prediction length is on GPU
+                            prediction_length = torch.tensor(actual_prediction_length, device=device, dtype=torch.long)
+                            
                             quantiles, mean = pipe.predict_quantiles(
                                 context=context,
                                 prediction_length=actual_prediction_length,
