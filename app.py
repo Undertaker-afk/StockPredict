@@ -295,7 +295,7 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
         if strategy == "chronos":
             try:
                 # Prepare data for Chronos
-                # Use Close prices instead of returns for better prediction
+                # Use Close prices for prediction
                 prices = df['Close'].values
                 
                 # Calculate returns for additional context
@@ -349,12 +349,9 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                 
                 with torch.inference_mode():
                     try:
-                        # Generate multiple predictions for ensemble
-                        num_ensemble = 5
-                        all_predictions = []
-                        
-                        for _ in range(num_ensemble):
-                            # Use predict_quantiles for probabilistic forecasts
+                        # Generate predictions using Chronos
+                        # First try with predict_quantiles
+                        try:
                             quantiles, mean = pipe.predict_quantiles(
                                 context=context,
                                 prediction_length=actual_prediction_length,
@@ -368,20 +365,29 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                             quantiles = quantiles.detach().cpu().numpy()
                             mean = mean.detach().cpu().numpy()
                             
-                            # Store predictions
-                            all_predictions.append((quantiles, mean))
-                        
-                        # Ensemble the predictions
-                        ensemble_quantiles = np.mean([p[0] for p in all_predictions], axis=0)
-                        ensemble_mean = np.mean([p[1] for p in all_predictions], axis=0)
-                        
-                        # Denormalize predictions
-                        mean_pred = scaler.inverse_transform(ensemble_mean.reshape(-1, 1)).flatten()
-                        lower_bound = scaler.inverse_transform(ensemble_quantiles[0, :, 0].reshape(-1, 1)).flatten()
-                        upper_bound = scaler.inverse_transform(ensemble_quantiles[0, :, 2].reshape(-1, 1)).flatten()
-                        
-                        # Calculate standard deviation from quantiles
-                        std_pred = (upper_bound - lower_bound) / (2 * 1.645)  # 90% confidence interval
+                            # Denormalize predictions
+                            mean_pred = scaler.inverse_transform(mean.reshape(-1, 1)).flatten()
+                            lower_bound = scaler.inverse_transform(quantiles[0, :, 0].reshape(-1, 1)).flatten()
+                            upper_bound = scaler.inverse_transform(quantiles[0, :, 2].reshape(-1, 1)).flatten()
+                            
+                            # Calculate standard deviation from quantiles
+                            std_pred = (upper_bound - lower_bound) / (2 * 1.645)  # 90% confidence interval
+                            
+                        except Exception as e:
+                            print(f"predict_quantiles failed, trying predict: {str(e)}")
+                            # Fallback to predict if predict_quantiles fails
+                            prediction = pipe.predict(
+                                context=context,
+                                prediction_length=actual_prediction_length,
+                                num_samples=100
+                            ).detach().cpu().numpy()
+                            
+                            if prediction is None or prediction.size == 0:
+                                raise ValueError("Chronos returned empty prediction")
+                            
+                            # Calculate mean and std from samples
+                            mean_pred = scaler.inverse_transform(prediction.mean(axis=0).reshape(-1, 1)).flatten()
+                            std_pred = prediction.std(axis=0) * (scaler.data_max_ - scaler.data_min_)
                         
                         # If we had to limit the prediction length, extend the prediction
                         if actual_prediction_length < prediction_days:
