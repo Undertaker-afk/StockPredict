@@ -981,6 +981,64 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
         if macd_pred is not None:
             signals["predicted_macd"] = macd_pred.tolist()
         
+        # Implement advanced features
+        # 1. Market Regime Detection
+        if use_regime_detection:
+            try:
+                returns = df['Returns'].dropna()
+                regime_info = detect_market_regime(returns)
+                signals["regime_info"] = regime_info
+            except Exception as e:
+                print(f"Regime detection error: {str(e)}")
+                signals["regime_info"] = {"error": str(e)}
+        
+        # 2. Advanced Trading Signals with Regime Awareness
+        try:
+            regime_info = signals.get("regime_info", {})
+            advanced_signals = advanced_trading_signals(df, regime_info)
+            signals["advanced_signals"] = advanced_signals
+        except Exception as e:
+            print(f"Advanced trading signals error: {str(e)}")
+            signals["advanced_signals"] = {"error": str(e)}
+        
+        # 3. Stress Testing
+        if use_stress_testing:
+            try:
+                stress_results = stress_test_scenarios(df, mean_pred)
+                signals["stress_test_results"] = stress_results
+            except Exception as e:
+                print(f"Stress testing error: {str(e)}")
+                signals["stress_test_results"] = {"error": str(e)}
+        
+        # 4. Ensemble Methods
+        if use_ensemble and ensemble_weights:
+            try:
+                ensemble_mean, ensemble_uncertainty = create_ensemble_prediction(
+                    df, prediction_days, ensemble_weights
+                )
+                if len(ensemble_mean) > 0:
+                    signals["ensemble_used"] = True
+                    signals["ensemble_prediction"] = ensemble_mean.tolist()
+                    signals["ensemble_uncertainty"] = ensemble_uncertainty.tolist()
+                    # Update the main prediction with ensemble if available
+                    if len(ensemble_mean) == len(mean_pred):
+                        mean_pred = ensemble_mean
+                        std_pred = ensemble_uncertainty
+                else:
+                    signals["ensemble_used"] = False
+            except Exception as e:
+                print(f"Ensemble prediction error: {str(e)}")
+                signals["ensemble_used"] = False
+                signals["ensemble_error"] = str(e)
+        
+        # 5. Enhanced Uncertainty Quantification
+        try:
+            if 'quantiles' in locals():
+                skewed_uncertainty = calculate_skewed_uncertainty(quantiles)
+                signals["skewed_uncertainty"] = skewed_uncertainty.tolist()
+        except Exception as e:
+            print(f"Skewed uncertainty calculation error: {str(e)}")
+        
         return signals, fig
         
     except Exception as e:
@@ -1791,11 +1849,24 @@ def create_interface():
                         gr.Markdown("### Structured Product Metrics")
                         hourly_metrics = gr.JSON(label="Product Metrics")
                         
-                        gr.Markdown("### Comprehensive Risk Analysis")
+                        gr.Markdown("### Advanced Risk Analysis")
                         hourly_risk_metrics = gr.JSON(label="Risk Metrics")
                         
+                        gr.Markdown("### Market Regime Analysis")
+                        hourly_regime_metrics = gr.JSON(label="Regime Metrics")
+                        
+                        gr.Markdown("### Trading Signals")
+                        hourly_signals_advanced = gr.JSON(label="Advanced Trading Signals")
+                    
+                    with gr.Column():
                         gr.Markdown("### Sector & Financial Analysis")
                         hourly_sector_metrics = gr.JSON(label="Sector Metrics")
+                        
+                        gr.Markdown("### Stress Test Results")
+                        hourly_stress_results = gr.JSON(label="Stress Test Results")
+                        
+                        gr.Markdown("### Ensemble Analysis")
+                        hourly_ensemble_metrics = gr.JSON(label="Ensemble Metrics")
             
             # 15-Minute Analysis Tab
             with gr.TabItem("15-Minute Analysis"):
@@ -1843,11 +1914,24 @@ def create_interface():
                         gr.Markdown("### Structured Product Metrics")
                         min15_metrics = gr.JSON(label="Product Metrics")
                         
-                        gr.Markdown("### Risk Analysis")
+                        gr.Markdown("### Advanced Risk Analysis")
                         min15_risk_metrics = gr.JSON(label="Risk Metrics")
                         
+                        gr.Markdown("### Market Regime Analysis")
+                        min15_regime_metrics = gr.JSON(label="Regime Metrics")
+                        
+                        gr.Markdown("### Trading Signals")
+                        min15_signals_advanced = gr.JSON(label="Advanced Trading Signals")
+                    
+                    with gr.Column():
                         gr.Markdown("### Sector & Financial Analysis")
                         min15_sector_metrics = gr.JSON(label="Sector Metrics")
+                        
+                        gr.Markdown("### Stress Test Results")
+                        min15_stress_results = gr.JSON(label="Stress Test Results")
+                        
+                        gr.Markdown("### Ensemble Analysis")
+                        min15_ensemble_metrics = gr.JSON(label="Ensemble Metrics")
         
         def analyze_stock(symbol, timeframe, prediction_days, lookback_days, strategy,
                          use_ensemble, use_regime_detection, use_stress_testing,
@@ -1977,7 +2061,7 @@ def create_interface():
         
         # Hourly analysis button click
         def hourly_analysis(s: str, pd: int, ld: int, st: str, ue: bool, urd: bool, ust: bool,
-                           rfr: float, mi: str, cw: float, tw: float, sw: float) -> Tuple[Dict, go.Figure, Dict, Dict, Dict]:
+                           rfr: float, mi: str, cw: float, tw: float, sw: float) -> Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict]:
             """
             Process hourly timeframe stock analysis with advanced features.
 
@@ -1996,7 +2080,7 @@ def create_interface():
                 sw (float): Statistical weight
 
             Returns:
-                Tuple containing analysis results
+                Tuple containing all analysis results
             """
             return analyze_stock(s, "1h", pd, ld, st, ue, urd, ust, rfr, mi, cw, tw, sw)
 
@@ -2005,12 +2089,13 @@ def create_interface():
             inputs=[hourly_symbol, hourly_prediction_days, hourly_lookback_days, hourly_strategy,
                    use_ensemble, use_regime_detection, use_stress_testing, risk_free_rate, market_index,
                    chronos_weight, technical_weight, statistical_weight],
-            outputs=[hourly_signals, hourly_plot, hourly_metrics, hourly_risk_metrics, hourly_sector_metrics]
+            outputs=[hourly_signals, hourly_plot, hourly_metrics, hourly_risk_metrics, hourly_sector_metrics,
+                    hourly_regime_metrics, hourly_stress_results, hourly_ensemble_metrics]
         )
         
         # 15-minute analysis button click
         def min15_analysis(s: str, pd: int, ld: int, st: str, ue: bool, urd: bool, ust: bool,
-                          rfr: float, mi: str, cw: float, tw: float, sw: float) -> Tuple[Dict, go.Figure, Dict, Dict, Dict]:
+                          rfr: float, mi: str, cw: float, tw: float, sw: float) -> Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict]:
             """
             Process 15-minute timeframe stock analysis with advanced features.
 
@@ -2029,7 +2114,7 @@ def create_interface():
                 sw (float): Statistical weight
 
             Returns:
-                Tuple containing analysis results
+                Tuple containing all analysis results
             """
             return analyze_stock(s, "15m", pd, ld, st, ue, urd, ust, rfr, mi, cw, tw, sw)
 
@@ -2038,7 +2123,8 @@ def create_interface():
             inputs=[min15_symbol, min15_prediction_days, min15_lookback_days, min15_strategy,
                    use_ensemble, use_regime_detection, use_stress_testing, risk_free_rate, market_index,
                    chronos_weight, technical_weight, statistical_weight],
-            outputs=[min15_signals, min15_plot, min15_metrics, min15_risk_metrics, min15_sector_metrics]
+            outputs=[min15_signals, min15_plot, min15_metrics, min15_risk_metrics, min15_sector_metrics,
+                    min15_regime_metrics, min15_stress_results, min15_ensemble_metrics]
         )
     
     return demo
