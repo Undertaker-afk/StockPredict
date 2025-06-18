@@ -1133,12 +1133,14 @@ def detect_market_regime(returns: pd.Series, n_regimes: int = 3) -> Dict:
     try:
         if HMM_AVAILABLE:
             # Use HMM for regime detection
+            # Convert pandas Series to numpy array for reshape
+            returns_array = returns.dropna().values
             model = hmm.GaussianHMM(n_components=n_regimes, random_state=42, covariance_type="full")
-            model.fit(returns.dropna().reshape(-1, 1))
+            model.fit(returns_array.reshape(-1, 1))
             
             # Get regime probabilities for the last observation
-            regime_probs = model.predict_proba(returns.dropna().reshape(-1, 1))
-            current_regime = model.predict(returns.dropna().reshape(-1, 1))[-1]
+            regime_probs = model.predict_proba(returns_array.reshape(-1, 1))
+            current_regime = model.predict(returns_array.reshape(-1, 1))[-1]
             
             # Calculate regime characteristics
             regime_means = model.means_.flatten()
@@ -1624,6 +1626,10 @@ def advanced_trading_signals(df: pd.DataFrame, regime_info: Dict = None) -> Dict
             bb_upper = df['BB_Upper'].iloc[-1]
             bb_lower = df['BB_Lower'].iloc[-1]
             
+            # Calculate position within Bollinger Bands (0-1 scale)
+            bb_position = (current_price - bb_lower) / (bb_upper - bb_lower) if bb_upper != bb_lower else 0.5
+            bb_strength = abs(bb_position - 0.5) * 2  # 0-1 scale, strongest at edges
+            
             if current_price < bb_lower:
                 bb_signal = "Buy"
                 bb_confidence = 0.7
@@ -1636,14 +1642,19 @@ def advanced_trading_signals(df: pd.DataFrame, regime_info: Dict = None) -> Dict
             
             signals["Bollinger"] = {
                 "signal": bb_signal,
+                "strength": bb_strength,
                 "confidence": bb_confidence,
-                "position": (current_price - bb_lower) / (bb_upper - bb_lower) if bb_upper != bb_lower else 0.5
+                "position": bb_position
             }
         
         # SMA signal
         if 'SMA_20' in df.columns and 'SMA_50' in df.columns:
             sma_20 = df['SMA_20'].iloc[-1]
             sma_50 = df['SMA_50'].iloc[-1]
+            
+            # Calculate SMA strength based on ratio
+            sma_ratio = sma_20 / sma_50 if sma_50 != 0 else 1.0
+            sma_strength = abs(sma_ratio - 1.0)  # 0-1 scale, strongest when ratio differs most from 1
             
             if sma_20 > sma_50:
                 sma_signal = "Buy"
@@ -1654,8 +1665,9 @@ def advanced_trading_signals(df: pd.DataFrame, regime_info: Dict = None) -> Dict
             
             signals["SMA"] = {
                 "signal": sma_signal,
+                "strength": sma_strength,
                 "confidence": sma_confidence,
-                "ratio": sma_20 / sma_50 if sma_50 != 0 else 1.0
+                "ratio": sma_ratio
             }
         
         # Calculate weighted overall signal
@@ -1663,10 +1675,14 @@ def advanced_trading_signals(df: pd.DataFrame, regime_info: Dict = None) -> Dict
         sell_signals = []
         
         for signal_name, signal_data in signals.items():
+            # Get strength with default value if not present
+            strength = signal_data.get("strength", 0.5)  # Default strength of 0.5
+            confidence = signal_data.get("confidence", 0.5)  # Default confidence of 0.5
+            
             if signal_data["signal"] == "Buy":
-                buy_signals.append(signal_data["strength"] * signal_data["confidence"])
+                buy_signals.append(strength * confidence)
             elif signal_data["signal"] == "Sell":
-                sell_signals.append(signal_data["strength"] * signal_data["confidence"])
+                sell_signals.append(strength * confidence)
         
         weighted_buy = sum(buy_signals) if buy_signals else 0
         weighted_sell = sum(sell_signals) if sell_signals else 0
