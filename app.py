@@ -352,26 +352,11 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                         # Move model to evaluation mode
                         pipe.model.eval()
                         
-                        # Move the main model to GPU but keep distribution head on CPU
-                        if hasattr(pipe.model, 'encoder'):
-                            pipe.model.encoder = pipe.model.encoder.to(device)
-                        if hasattr(pipe.model, 'decoder'):
-                            pipe.model.decoder = pipe.model.decoder.to(device)
-                        if hasattr(pipe.model, 'embed_tokens'):
-                            pipe.model.embed_tokens = pipe.model.embed_tokens.to(device)
-                        if hasattr(pipe.model, 'final_layer_norm'):
-                            pipe.model.final_layer_norm = pipe.model.final_layer_norm.to(device)
-                        
-                        # Move all parameters and buffers except distribution head
-                        for name, param in pipe.model.named_parameters():
-                            if 'distribution_head' not in name:
-                                param.data = param.data.to(device)
-                        for name, buffer in pipe.model.named_buffers():
-                            if 'distribution_head' not in name:
-                                buffer.data = buffer.data.to(device)
+                        # Move the entire model to GPU
+                        pipe.model = pipe.model.to(device)
                         
                         # Use predict_quantiles with proper formatting
-                        with torch.cuda.amp.autocast():
+                        with torch.amp.autocast('cuda'):
                             quantiles, mean = pipe.predict_quantiles(
                                 context=context,
                                 prediction_length=actual_prediction_length,
