@@ -310,7 +310,24 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                 
                 # Load pipeline and move to GPU
                 pipe = load_pipeline()
+                
+                # Move entire model and its components to CUDA
                 pipe.model = pipe.model.cuda()
+                
+                # Move all model parameters and buffers to CUDA
+                for param in pipe.model.parameters():
+                    param.data = param.data.cuda()
+                for buffer in pipe.model.buffers():
+                    buffer.data = buffer.data.cuda()
+                
+                # Move all submodules to CUDA
+                for module in pipe.model.modules():
+                    module.to('cuda')
+                    # Move any internal states or buffers
+                    if hasattr(module, '_buffers'):
+                        for buffer in module._buffers.values():
+                            if buffer is not None:
+                                buffer.data = buffer.data.cuda()
                 
                 # Get the model's device and dtype
                 device = next(pipe.model.parameters()).device
@@ -350,14 +367,8 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                         print(f"Model device: {next(pipe.model.parameters()).device}")
                         print(f"Model dtype: {next(pipe.model.parameters()).dtype}")
                         
-                        # Move model to evaluation mode and ensure it's on the correct device
+                        # Move model to evaluation mode
                         pipe.model.eval()
-                        pipe.model = pipe.model.to(device)
-                        
-                        # Ensure all model components are on the same device
-                        for module in pipe.model.modules():
-                            if hasattr(module, 'to'):
-                                module.to(device)
                         
                         # Use predict_quantiles with proper formatting
                         quantiles, mean = pipe.predict_quantiles(
