@@ -144,14 +144,24 @@ def get_historical_data(symbol: str, timeframe: str = "1d", lookback_days: int =
         
         # Get additional info for structured products with retry mechanism
         def fetch_info():
-            return ticker.info
+            info = ticker.info
+            if info is None:
+                raise Exception(f"Could not fetch company info for {symbol}")
+            return info
         
-        info = retry_yfinance_request(fetch_info)
-        
-        df['Market_Cap'] = info.get('marketCap', None)
-        df['Sector'] = info.get('sector', None)
-        df['Industry'] = info.get('industry', None)
-        df['Dividend_Yield'] = info.get('dividendYield', None)
+        try:
+            info = retry_yfinance_request(fetch_info)
+            df['Market_Cap'] = info.get('marketCap', None)
+            df['Sector'] = info.get('sector', None)
+            df['Industry'] = info.get('industry', None)
+            df['Dividend_Yield'] = info.get('dividendYield', None)
+        except Exception as e:
+            print(f"Warning: Could not fetch company info for {symbol}: {str(e)}")
+            # Set default values for missing info
+            df['Market_Cap'] = None
+            df['Sector'] = None
+            df['Industry'] = None
+            df['Dividend_Yield'] = None
         
         # Calculate technical indicators with adjusted windows based on timeframe
         if timeframe == "1d":
@@ -192,8 +202,8 @@ def get_historical_data(symbol: str, timeframe: str = "1d", lookback_days: int =
         df['Avg_Daily_Volume'] = df['Volume'].rolling(window=vol_window, min_periods=1).mean()
         df['Volume_Volatility'] = df['Volume'].rolling(window=vol_window, min_periods=1).std()
         
-        # Fill NaN values with forward fill, then backward fill
-        df = df.fillna(method='ffill').fillna(method='bfill')
+        # Fill NaN values using forward fill then backward fill (updated to use ffill/bfill)
+        df = df.ffill().bfill()
         
         # Ensure we have enough data points
         min_required_points = 64  # Minimum required for Chronos
@@ -207,7 +217,7 @@ def get_historical_data(symbol: str, timeframe: str = "1d", lookback_days: int =
             extended_df = retry_yfinance_request(fetch_extended_history)
             if not extended_df.empty:
                 df = pd.concat([extended_df, df])
-                df = df.fillna(method='ffill').fillna(method='bfill')
+                df = df.ffill().bfill()
         
         if len(df) < 2:
             raise Exception(f"Insufficient data points for {symbol} in {timeframe} timeframe")
