@@ -370,7 +370,8 @@ def calculate_bollinger_bands(prices: pd.Series, period: int = 20, std_dev: int 
 def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5, strategy: str = "chronos",
                    use_ensemble: bool = True, use_regime_detection: bool = True, use_stress_testing: bool = True,
                    risk_free_rate: float = 0.02, ensemble_weights: Dict = None, 
-                   market_index: str = "^GSPC") -> Tuple[Dict, go.Figure]:
+                   market_index: str = "^GSPC",
+                   random_real_points: int = 4) -> Tuple[Dict, go.Figure]:
     """
     Make prediction using selected strategy with advanced features.
     
@@ -385,6 +386,7 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
         risk_free_rate (float): Risk-free rate for calculations
         ensemble_weights (Dict): Weights for ensemble models
         market_index (str): Market index for correlation analysis
+        random_real_points (int): Number of random real points to include in long-horizon context
     
     Returns:
         Tuple[Dict, go.Figure]: Trading signals and visualization plot
@@ -397,10 +399,13 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
             try:
                 # Prepare data for Chronos
                 prices = df['Close'].values
-                normalized_prices = scaler.fit_transform(prices.reshape(-1, 1)).flatten()
+                window_size = 64  # Chronos context window size
+                context_window = prices[-window_size:]
+                scaler = MinMaxScaler(feature_range=(-1, 1))
+                normalized_prices = scaler.fit_transform(context_window.reshape(-1, 1)).flatten()
                 
                 # Ensure we have enough data points
-                min_data_points = 64
+                min_data_points = window_size
                 if len(normalized_prices) < min_data_points:
                     padding = np.full(min_data_points - len(normalized_prices), normalized_prices[-1])
                     normalized_prices = np.concatenate([padding, normalized_prices])
@@ -421,23 +426,17 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                 
                 # Adjust prediction length based on timeframe
                 if timeframe == "1d":
-                    max_prediction_length = 64  # Chronos maximum
-                    window_size = 64  # Use full context window
-                elif timeframe == "1h":
-                    max_prediction_length = 64  # Chronos maximum
-                    window_size = 64  # Use full context window
-                else:  # 15m
-                    max_prediction_length = 64  # Chronos maximum
-                    window_size = 64  # Use full context window
-                
-                # Calculate actual prediction length based on timeframe
-                if timeframe == "1d":
+                    max_prediction_length = window_size  # 64 days
                     actual_prediction_length = min(prediction_days, max_prediction_length)
+                    trim_length = prediction_days
                 elif timeframe == "1h":
+                    max_prediction_length = window_size  # 64 hours
                     actual_prediction_length = min(prediction_days * 24, max_prediction_length)
+                    trim_length = prediction_days * 24
                 else:  # 15m
+                    max_prediction_length = window_size  # 64 intervals
                     actual_prediction_length = min(prediction_days * 96, max_prediction_length)
-                
+                    trim_length = prediction_days * 96
                 actual_prediction_length = max(1, actual_prediction_length)
                 
                 # Use predict_quantiles with proper formatting
@@ -628,7 +627,7 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                 quantiles = quantiles.detach().cpu().numpy()
                 mean = mean.detach().cpu().numpy()
                 
-                # Denormalize predictions
+                # Denormalize predictions using the same scaler as context
                 mean_pred = scaler.inverse_transform(mean.reshape(-1, 1)).flatten()
                 lower_bound = scaler.inverse_transform(quantiles[0, :, 0].reshape(-1, 1)).flatten()
                 upper_bound = scaler.inverse_transform(quantiles[0, :, 2].reshape(-1, 1)).flatten()
@@ -636,37 +635,39 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                 # Calculate standard deviation from quantiles
                 std_pred = (upper_bound - lower_bound) / (2 * 1.645)
                 
-                # If we had to limit the prediction length, extend the prediction
-                if actual_prediction_length < prediction_days:
-                    # Initialize arrays for extended predictions
+                # Check for discontinuity between last actual and first prediction
+                last_actual = prices[-1]
+                first_pred = mean_pred[0]
+                if abs(first_pred - last_actual) > max(1e-6, 0.05 * abs(last_actual)):
+                    print(f"Warning: Discontinuity detected between last actual ({last_actual}) and first prediction ({first_pred})")
+                
+                # If we had to limit the prediction length, extend the prediction recursively
+                if actual_prediction_length < trim_length:
                     extended_mean_pred = mean_pred.copy()
                     extended_std_pred = std_pred.copy()
                     
                     # Calculate the number of extension steps needed
-                    remaining_days = prediction_days - actual_prediction_length
-                    steps_needed = (remaining_days + actual_prediction_length - 1) // actual_prediction_length
-                    
+                    remaining_steps = trim_length - actual_prediction_length
+                    steps_needed = (remaining_steps + actual_prediction_length - 1) // actual_prediction_length
                     for step in range(steps_needed):
-                        # Use the last window_size points as context for next prediction
-                        context_window = extended_mean_pred[-window_size:]
                         
-                        # Normalize the context window
-                        normalized_context = scaler.fit_transform(context_window.reshape(-1, 1)).flatten()
-                        
+                        # Use last window_size points as context for next prediction
+                        context_window = np.concatenate([prices, extended_mean_pred])[-window_size:]
+                        scaler = MinMaxScaler(feature_range=(-1, 1))
+
                         # Convert to tensor and ensure proper shape
+                        normalized_context = scaler.fit_transform(context_window.reshape(-1, 1)).flatten()
                         context = torch.tensor(normalized_context, dtype=dtype, device=device)
                         if len(context.shape) == 1:
                             context = context.unsqueeze(0)
                         
                         # Calculate next prediction length based on timeframe
                         if timeframe == "1d":
-                            next_length = min(max_prediction_length, remaining_days)
+                            next_length = min(max_prediction_length, remaining_steps)
                         elif timeframe == "1h":
-                            next_length = min(max_prediction_length, remaining_days * 24)
-                        else:  # 15m
-                            next_length = min(max_prediction_length, remaining_days * 96)
-                        
-                        # Make prediction for next window
+                            next_length = min(max_prediction_length, remaining_steps)
+                        else:
+                            next_length = min(max_prediction_length, remaining_steps)
                         with torch.amp.autocast('cuda'):
                             next_quantiles, next_mean = pipe.predict_quantiles(
                                 context=context,
@@ -685,38 +686,19 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                         
                         # Calculate standard deviation
                         next_std_pred = (next_upper - next_lower) / (2 * 1.645)
-                        
-                        # Apply exponential smoothing to reduce prediction drift
-                        if step > 0:
-                            alpha = 0.3  # Smoothing factor
-                            next_mean_pred = alpha * next_mean_pred + (1 - alpha) * extended_mean_pred[-len(next_mean_pred):]
-                            next_std_pred = alpha * next_std_pred + (1 - alpha) * extended_std_pred[-len(next_std_pred):]
-                        
+                        if abs(next_mean_pred[0] - extended_mean_pred[-1]) > max(1e-6, 0.05 * abs(extended_mean_pred[-1])):
+                            print(f"Warning: Discontinuity detected between last prediction ({extended_mean_pred[-1]}) and next prediction ({next_mean_pred[0]})")
+                    
                         # Append predictions
                         extended_mean_pred = np.concatenate([extended_mean_pred, next_mean_pred])
                         extended_std_pred = np.concatenate([extended_std_pred, next_std_pred])
-                        
-                        # Update remaining days
-                        if timeframe == "1d":
-                            remaining_days -= len(next_mean_pred)
-                        elif timeframe == "1h":
-                            remaining_days -= len(next_mean_pred) / 24
-                        else:  # 15m
-                            remaining_days -= len(next_mean_pred) / 96
-                        
-                        if remaining_days <= 0:
+                        remaining_steps -= len(next_mean_pred)
+                        if remaining_steps <= 0:
                             break
                     
                     # Trim to exact prediction length if needed
-                    if timeframe == "1d":
-                        mean_pred = extended_mean_pred[:prediction_days]
-                        std_pred = extended_std_pred[:prediction_days]
-                    elif timeframe == "1h":
-                        mean_pred = extended_mean_pred[:prediction_days * 24]
-                        std_pred = extended_std_pred[:prediction_days * 24]
-                    else:  # 15m
-                        mean_pred = extended_mean_pred[:prediction_days * 96]
-                        std_pred = extended_std_pred[:prediction_days * 96]
+                    mean_pred = extended_mean_pred[:trim_length]
+                    std_pred = extended_std_pred[:trim_length]
                 
                 # Extend Chronos forecasting to volume and technical indicators
                 volume_pred = None
@@ -728,118 +710,276 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                     volume_data = df['Volume'].values
                     if len(volume_data) >= 64:
                         # Normalize volume data
+                        window_size = 64
+                        context_window = volume_data[-window_size:]
                         volume_scaler = MinMaxScaler(feature_range=(-1, 1))
-                        normalized_volume = volume_scaler.fit_transform(volume_data.reshape(-1, 1)).flatten()
-                        
-                        # Use last 64 points for volume prediction
-                        volume_context = normalized_volume[-64:]
-                        volume_context_tensor = torch.tensor(volume_context, dtype=dtype, device=device)
-                        if len(volume_context_tensor.shape) == 1:
-                            volume_context_tensor = volume_context_tensor.unsqueeze(0)
-                        
-                        # Predict volume
+                        normalized_volume = volume_scaler.fit_transform(context_window.reshape(-1, 1)).flatten()
+                        if len(normalized_volume) < window_size:
+                            padding = np.full(window_size - len(normalized_volume), normalized_volume[-1])
+                            normalized_volume = np.concatenate([padding, normalized_volume])
+                        elif len(normalized_volume) > window_size:
+                            normalized_volume = normalized_volume[-window_size:]
+                        volume_context = torch.tensor(normalized_volume, dtype=dtype, device=device)
+                        if len(volume_context.shape) == 1:
+                            volume_context = volume_context.unsqueeze(0)
                         with torch.amp.autocast('cuda'):
                             volume_quantiles, volume_mean = pipe.predict_quantiles(
-                                context=volume_context_tensor,
-                                prediction_length=min(actual_prediction_length, 64),
+                                context=volume_context,
+                                prediction_length=actual_prediction_length,
                                 quantile_levels=[0.1, 0.5, 0.9]
                             )
-                        
-                        # Convert and denormalize volume predictions
+                        volume_quantiles = volume_quantiles.detach().cpu().numpy()
                         volume_mean = volume_mean.detach().cpu().numpy()
                         volume_pred = volume_scaler.inverse_transform(volume_mean.reshape(-1, 1)).flatten()
-                        
+                        lower_bound = volume_scaler.inverse_transform(volume_quantiles[0, :, 0].reshape(-1, 1)).flatten()
+                        upper_bound = volume_scaler.inverse_transform(volume_quantiles[0, :, 2].reshape(-1, 1)).flatten()
+                        std_pred_vol = (upper_bound - lower_bound) / (2 * 1.645)
+                        last_actual = volume_data[-1]
+                        first_pred = volume_pred[0]
+                        if abs(first_pred - last_actual) > max(1e-6, 0.05 * abs(last_actual)):
+                            print(f"Warning: Discontinuity detected between last actual volume ({last_actual}) and first prediction ({first_pred})")
+
                         # Extend volume predictions if needed
-                        if len(volume_pred) < len(mean_pred):
-                            last_volume = volume_pred[-1]
-                            extension_length = len(mean_pred) - len(volume_pred)
-                            volume_extension = np.full(extension_length, last_volume)
-                            volume_pred = np.concatenate([volume_pred, volume_extension])
+                        if actual_prediction_length < trim_length:
+                            extended_mean_pred = volume_pred.copy()
+                            extended_std_pred = std_pred_vol.copy()
+                            remaining_steps = trim_length - actual_prediction_length
+                            steps_needed = (remaining_steps + actual_prediction_length - 1) // actual_prediction_length
+                            for step in range(steps_needed):
+                                # Use as much actual data as possible, then fill with predictions
+                                n_actual = max(0, window_size - len(extended_mean_pred))
+                                n_pred = window_size - n_actual
+                                if n_actual > 0:
+                                    context_window = np.concatenate([
+                                        volume_data[-n_actual:],
+                                        extended_mean_pred[-n_pred:] if n_pred > 0 else np.array([])
+                                    ])
+                                else:
+                                    # All synthetic, but add a few random real points
+                                    n_random_real = min(random_real_points, len(volume_data))
+                                    random_real = np.random.choice(volume_data, size=n_random_real, replace=False)
+                                    context_window = np.concatenate([
+                                        extended_mean_pred[-(window_size - n_random_real):],
+                                        random_real
+                                    ])
+                                volume_scaler = MinMaxScaler(feature_range=(-1, 1))
+                                normalized_context = volume_scaler.fit_transform(context_window.reshape(-1, 1)).flatten()
+                                context = torch.tensor(normalized_context, dtype=dtype, device=device)
+                                if len(context.shape) == 1:
+                                    context = context.unsqueeze(0)
+                                next_length = min(window_size, remaining_steps)
+                                with torch.amp.autocast('cuda'):
+                                    next_quantiles, next_mean = pipe.predict_quantiles(
+                                        context=context,
+                                        prediction_length=next_length,
+                                        quantile_levels=[0.1, 0.5, 0.9]
+                                    )
+                                next_mean = next_mean.detach().cpu().numpy()
+                                next_quantiles = next_quantiles.detach().cpu().numpy()
+                                next_mean_pred = volume_scaler.inverse_transform(next_mean.reshape(-1, 1)).flatten()
+                                next_lower = volume_scaler.inverse_transform(next_quantiles[0, :, 0].reshape(-1, 1)).flatten()
+                                next_upper = volume_scaler.inverse_transform(next_quantiles[0, :, 2].reshape(-1, 1)).flatten()
+                                next_std_pred = (next_upper - next_lower) / (2 * 1.645)
+                                if abs(next_mean_pred[0] - extended_mean_pred[-1]) > max(1e-6, 0.05 * abs(extended_mean_pred[-1])):
+                                    print(f"Warning: Discontinuity detected between last volume prediction ({extended_mean_pred[-1]}) and next prediction ({next_mean_pred[0]})")
+                                extended_mean_pred = np.concatenate([extended_mean_pred, next_mean_pred])
+                                extended_std_pred = np.concatenate([extended_std_pred, next_std_pred])
+                                remaining_steps -= len(next_mean_pred)
+                                if remaining_steps <= 0:
+                                    break
+                            volume_pred = extended_mean_pred[:trim_length]
+                    else:
+                        avg_volume = df['Volume'].mean()
+                        volume_pred = np.full(trim_length, avg_volume)
                 except Exception as e:
                     print(f"Volume prediction error: {str(e)}")
                     # Fallback: use historical average
                     avg_volume = df['Volume'].mean()
-                    volume_pred = np.full(len(mean_pred), avg_volume)
-                
+                    volume_pred = np.full(trim_length, avg_volume)
                 try:
                     # Prepare RSI data for Chronos
                     rsi_data = df['RSI'].values
                     if len(rsi_data) >= 64 and not np.any(np.isnan(rsi_data)):
                         # RSI is already normalized (0-100), but we'll scale it to (-1, 1)
+                        window_size = 64
+                        context_window = rsi_data[-window_size:]
                         rsi_scaler = MinMaxScaler(feature_range=(-1, 1))
-                        normalized_rsi = rsi_scaler.fit_transform(rsi_data.reshape(-1, 1)).flatten()
-                        
-                        # Use last 64 points for RSI prediction
-                        rsi_context = normalized_rsi[-64:]
-                        rsi_context_tensor = torch.tensor(rsi_context, dtype=dtype, device=device)
-                        if len(rsi_context_tensor.shape) == 1:
-                            rsi_context_tensor = rsi_context_tensor.unsqueeze(0)
-                        
-                        # Predict RSI
+                        normalized_rsi = rsi_scaler.fit_transform(context_window.reshape(-1, 1)).flatten()
+                        if len(normalized_rsi) < window_size:
+                            padding = np.full(window_size - len(normalized_rsi), normalized_rsi[-1])
+                            normalized_rsi = np.concatenate([padding, normalized_rsi])
+                        elif len(normalized_rsi) > window_size:
+                            normalized_rsi = normalized_rsi[-window_size:]
+                        rsi_context = torch.tensor(normalized_rsi, dtype=dtype, device=device)
+                        if len(rsi_context.shape) == 1:
+                            rsi_context = rsi_context.unsqueeze(0)
                         with torch.amp.autocast('cuda'):
                             rsi_quantiles, rsi_mean = pipe.predict_quantiles(
-                                context=rsi_context_tensor,
-                                prediction_length=min(actual_prediction_length, 64),
+                                context=rsi_context,
+                                prediction_length=actual_prediction_length,
                                 quantile_levels=[0.1, 0.5, 0.9]
                             )
-                        
                         # Convert and denormalize RSI predictions
+                        rsi_quantiles = rsi_quantiles.detach().cpu().numpy()
                         rsi_mean = rsi_mean.detach().cpu().numpy()
                         rsi_pred = rsi_scaler.inverse_transform(rsi_mean.reshape(-1, 1)).flatten()
-                        
                         # Clamp RSI to valid range (0-100)
+                        lower_bound = rsi_scaler.inverse_transform(rsi_quantiles[0, :, 0].reshape(-1, 1)).flatten()
+                        upper_bound = rsi_scaler.inverse_transform(rsi_quantiles[0, :, 2].reshape(-1, 1)).flatten()
+                        std_pred_rsi = (upper_bound - lower_bound) / (2 * 1.645)
                         rsi_pred = np.clip(rsi_pred, 0, 100)
-                        
+                        last_actual = rsi_data[-1]
+                        first_pred = rsi_pred[0]
+                        if abs(first_pred - last_actual) > max(1e-6, 0.05 * abs(last_actual)):
+                            print(f"Warning: Discontinuity detected between last actual RSI ({last_actual}) and first prediction ({first_pred})")
                         # Extend RSI predictions if needed
-                        if len(rsi_pred) < len(mean_pred):
-                            last_rsi = rsi_pred[-1]
-                            extension_length = len(mean_pred) - len(rsi_pred)
-                            rsi_extension = np.full(extension_length, last_rsi)
-                            rsi_pred = np.concatenate([rsi_pred, rsi_extension])
+                        if actual_prediction_length < trim_length:
+                            extended_mean_pred = rsi_pred.copy()
+                            extended_std_pred = std_pred_rsi.copy()
+                            remaining_steps = trim_length - actual_prediction_length
+                            steps_needed = (remaining_steps + actual_prediction_length - 1) // actual_prediction_length
+                            for step in range(steps_needed):
+                                n_actual = max(0, window_size - len(extended_mean_pred))
+                                n_pred = window_size - n_actual
+                                if n_actual > 0:
+                                    context_window = np.concatenate([
+                                        rsi_data[-n_actual:],
+                                        extended_mean_pred[-n_pred:] if n_pred > 0 else np.array([])
+                                    ])
+                                else:
+                                    # All synthetic, but add a few random real points
+                                    n_random_real = min(random_real_points, len(rsi_data))
+                                    random_real = np.random.choice(rsi_data, size=n_random_real, replace=False)
+                                    context_window = np.concatenate([
+                                        extended_mean_pred[-(window_size - n_random_real):],
+                                        random_real
+                                    ])
+                                rsi_scaler = MinMaxScaler(feature_range=(-1, 1))
+                                normalized_context = rsi_scaler.fit_transform(context_window.reshape(-1, 1)).flatten()
+                                context = torch.tensor(normalized_context, dtype=dtype, device=device)
+                                if len(context.shape) == 1:
+                                    context = context.unsqueeze(0)
+                                next_length = min(window_size, remaining_steps)
+                                with torch.amp.autocast('cuda'):
+                                    next_quantiles, next_mean = pipe.predict_quantiles(
+                                        context=context,
+                                        prediction_length=next_length,
+                                        quantile_levels=[0.1, 0.5, 0.9]
+                                    )
+                                next_mean = next_mean.detach().cpu().numpy()
+                                next_quantiles = next_quantiles.detach().cpu().numpy()
+                                next_mean_pred = rsi_scaler.inverse_transform(next_mean.reshape(-1, 1)).flatten()
+                                next_lower = rsi_scaler.inverse_transform(next_quantiles[0, :, 0].reshape(-1, 1)).flatten()
+                                next_upper = rsi_scaler.inverse_transform(next_quantiles[0, :, 2].reshape(-1, 1)).flatten()
+                                next_std_pred = (next_upper - next_lower) / (2 * 1.645)
+                                next_mean_pred = np.clip(next_mean_pred, 0, 100)
+                                if abs(next_mean_pred[0] - extended_mean_pred[-1]) > max(1e-6, 0.05 * abs(extended_mean_pred[-1])):
+                                    print(f"Warning: Discontinuity detected between last RSI prediction ({extended_mean_pred[-1]}) and next prediction ({next_mean_pred[0]})")
+                                extended_mean_pred = np.concatenate([extended_mean_pred, next_mean_pred])
+                                extended_std_pred = np.concatenate([extended_std_pred, next_std_pred])
+                                remaining_steps -= len(next_mean_pred)
+                                if remaining_steps <= 0:
+                                    break
+                            rsi_pred = extended_mean_pred[:trim_length]
+                    else:
+                        last_rsi = df['RSI'].iloc[-1]
+                        rsi_pred = np.full(trim_length, last_rsi)
                 except Exception as e:
                     print(f"RSI prediction error: {str(e)}")
                     # Fallback: use last known RSI value
                     last_rsi = df['RSI'].iloc[-1]
-                    rsi_pred = np.full(len(mean_pred), last_rsi)
-                
+                    rsi_pred = np.full(trim_length, last_rsi)
                 try:
                     # Prepare MACD data for Chronos
                     macd_data = df['MACD'].values
                     if len(macd_data) >= 64 and not np.any(np.isnan(macd_data)):
                         # Normalize MACD data
+                        window_size = 64
+                        context_window = macd_data[-window_size:]
                         macd_scaler = MinMaxScaler(feature_range=(-1, 1))
-                        normalized_macd = macd_scaler.fit_transform(macd_data.reshape(-1, 1)).flatten()
-                        
-                        # Use last 64 points for MACD prediction
-                        macd_context = normalized_macd[-64:]
-                        macd_context_tensor = torch.tensor(macd_context, dtype=dtype, device=device)
-                        if len(macd_context_tensor.shape) == 1:
-                            macd_context_tensor = macd_context_tensor.unsqueeze(0)
-                        
-                        # Predict MACD
+                        normalized_macd = macd_scaler.fit_transform(context_window.reshape(-1, 1)).flatten()
+                        if len(normalized_macd) < window_size:
+                            padding = np.full(window_size - len(normalized_macd), normalized_macd[-1])
+                            normalized_macd = np.concatenate([padding, normalized_macd])
+                        elif len(normalized_macd) > window_size:
+                            normalized_macd = normalized_macd[-window_size:]
+                        macd_context = torch.tensor(normalized_macd, dtype=dtype, device=device)
+                        if len(macd_context.shape) == 1:
+                            macd_context = macd_context.unsqueeze(0)
                         with torch.amp.autocast('cuda'):
                             macd_quantiles, macd_mean = pipe.predict_quantiles(
-                                context=macd_context_tensor,
-                                prediction_length=min(actual_prediction_length, 64),
+                                context=macd_context,
+                                prediction_length=actual_prediction_length,
                                 quantile_levels=[0.1, 0.5, 0.9]
                             )
-                        
                         # Convert and denormalize MACD predictions
+                        macd_quantiles = macd_quantiles.detach().cpu().numpy()
                         macd_mean = macd_mean.detach().cpu().numpy()
                         macd_pred = macd_scaler.inverse_transform(macd_mean.reshape(-1, 1)).flatten()
-                        
+                        lower_bound = macd_scaler.inverse_transform(macd_quantiles[0, :, 0].reshape(-1, 1)).flatten()
+                        upper_bound = macd_scaler.inverse_transform(macd_quantiles[0, :, 2].reshape(-1, 1)).flatten()
+                        std_pred_macd = (upper_bound - lower_bound) / (2 * 1.645)
+                        last_actual = macd_data[-1]
+                        first_pred = macd_pred[0]
+
                         # Extend MACD predictions if needed
-                        if len(macd_pred) < len(mean_pred):
-                            last_macd = macd_pred[-1]
-                            extension_length = len(mean_pred) - len(macd_pred)
-                            macd_extension = np.full(extension_length, last_macd)
-                            macd_pred = np.concatenate([macd_pred, macd_extension])
+                        if abs(first_pred - last_actual) > max(1e-6, 0.05 * abs(last_actual)):
+                            print(f"Warning: Discontinuity detected between last actual MACD ({last_actual}) and first prediction ({first_pred})")
+                        if actual_prediction_length < trim_length:
+                            extended_mean_pred = macd_pred.copy()
+                            extended_std_pred = std_pred_macd.copy()
+                            remaining_steps = trim_length - actual_prediction_length
+                            steps_needed = (remaining_steps + actual_prediction_length - 1) // actual_prediction_length
+                            for step in range(steps_needed):
+                                n_actual = max(0, window_size - len(extended_mean_pred))
+                                n_pred = window_size - n_actual
+                                if n_actual > 0:
+                                    context_window = np.concatenate([
+                                        macd_data[-n_actual:],
+                                        extended_mean_pred[-n_pred:] if n_pred > 0 else np.array([])
+                                    ])
+                                else:
+                                    # All synthetic, but add a few random real points
+                                    n_random_real = min(random_real_points, len(macd_data))
+                                    random_real = np.random.choice(macd_data, size=n_random_real, replace=False)
+                                    context_window = np.concatenate([
+                                        extended_mean_pred[-(window_size - n_random_real):],
+                                        random_real
+                                    ])
+                                macd_scaler = MinMaxScaler(feature_range=(-1, 1))
+                                normalized_context = macd_scaler.fit_transform(context_window.reshape(-1, 1)).flatten()
+                                context = torch.tensor(normalized_context, dtype=dtype, device=device)
+                                if len(context.shape) == 1:
+                                    context = context.unsqueeze(0)
+                                next_length = min(window_size, remaining_steps)
+                                with torch.amp.autocast('cuda'):
+                                    next_quantiles, next_mean = pipe.predict_quantiles(
+                                        context=context,
+                                        prediction_length=next_length,
+                                        quantile_levels=[0.1, 0.5, 0.9]
+                                    )
+                                next_mean = next_mean.detach().cpu().numpy()
+                                next_quantiles = next_quantiles.detach().cpu().numpy()
+                                next_mean_pred = macd_scaler.inverse_transform(next_mean.reshape(-1, 1)).flatten()
+                                next_lower = macd_scaler.inverse_transform(next_quantiles[0, :, 0].reshape(-1, 1)).flatten()
+                                next_upper = macd_scaler.inverse_transform(next_quantiles[0, :, 2].reshape(-1, 1)).flatten()
+                                next_std_pred = (next_upper - next_lower) / (2 * 1.645)
+                                if abs(next_mean_pred[0] - extended_mean_pred[-1]) > max(1e-6, 0.05 * abs(extended_mean_pred[-1])):
+                                    print(f"Warning: Discontinuity detected between last MACD prediction ({extended_mean_pred[-1]}) and next prediction ({next_mean_pred[0]})")
+                                extended_mean_pred = np.concatenate([extended_mean_pred, next_mean_pred])
+                                extended_std_pred = np.concatenate([extended_std_pred, next_std_pred])
+                                remaining_steps -= len(next_mean_pred)
+                                if remaining_steps <= 0:
+                                    break
+                            macd_pred = extended_mean_pred[:trim_length]
+                    else:
+                        last_macd = df['MACD'].iloc[-1]
+                        macd_pred = np.full(trim_length, last_macd)
                 except Exception as e:
                     print(f"MACD prediction error: {str(e)}")
                     # Fallback: use last known MACD value
                     last_macd = df['MACD'].iloc[-1]
-                    macd_pred = np.full(len(mean_pred), last_macd)
-                
+                    macd_pred = np.full(trim_length, last_macd)
             except Exception as e:
                 print(f"Chronos prediction error: {str(e)}")
                 print(f"Error type: {type(e)}")
@@ -1756,6 +1896,13 @@ def create_interface():
                         label="Market Index for Correlation",
                         value="^GSPC"
                     )
+                    random_real_points = gr.Slider(
+                        minimum=0,
+                        maximum=16,
+                        value=4,
+                        step=1,
+                        label="Random Real Points in Long-Horizon Context"
+                    )
                 
                 with gr.Column():
                     gr.Markdown("### Ensemble Weights")
@@ -1969,7 +2116,8 @@ def create_interface():
         
         def analyze_stock(symbol, timeframe, prediction_days, lookback_days, strategy,
                          use_ensemble, use_regime_detection, use_stress_testing,
-                         risk_free_rate, market_index, chronos_weight, technical_weight, statistical_weight):
+                         risk_free_rate, market_index, chronos_weight, technical_weight, statistical_weight,
+                         random_real_points):
             try:
                 # Create ensemble weights
                 ensemble_weights = {
@@ -1993,7 +2141,8 @@ def create_interface():
                     use_stress_testing=use_stress_testing,
                     risk_free_rate=risk_free_rate,
                     ensemble_weights=ensemble_weights,
-                    market_index=market_index
+                    market_index=market_index,
+                    random_real_points=random_real_points
                 )
                 
                 # Get historical data for additional metrics
@@ -2075,7 +2224,8 @@ def create_interface():
         
         # Daily analysis button click
         def daily_analysis(s: str, pd: int, ld: int, st: str, ue: bool, urd: bool, ust: bool,
-                          rfr: float, mi: str, cw: float, tw: float, sw: float) -> Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict]:
+                          rfr: float, mi: str, cw: float, tw: float, sw: float,
+                          rrp: int) -> Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict]:
             """
             Process daily timeframe stock analysis with advanced features.
 
@@ -2109,6 +2259,7 @@ def create_interface():
                     Weight given to technical analysis predictions in ensemble methods
                 sw (float): Statistical weight in ensemble (0.0-1.0)
                     Weight given to statistical model predictions in ensemble methods
+                rrp (int): Number of random real points to include in long-horizon context
 
             Returns:
                 Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict]: Analysis results containing:
@@ -2128,7 +2279,7 @@ def create_interface():
 
             Example:
                 >>> signals, plot, metrics, risk, sector, regime, stress, ensemble, advanced = daily_analysis(
-                ...     "AAPL", 30, 365, "chronos", True, True, True, 0.02, "^GSPC", 0.6, 0.2, 0.2
+                ...     "AAPL", 30, 365, "chronos", True, True, True, 0.02, "^GSPC", 0.6, 0.2, 0.2, 4
                 ... )
 
             Notes:
@@ -2138,20 +2289,22 @@ def create_interface():
                 - Ensemble weights should sum to 1.0 for optimal results
                 - Risk-free rate is typically between 0.02-0.05 (2-5% annually)
             """
-            return analyze_stock(s, "1d", pd, ld, st, ue, urd, ust, rfr, mi, cw, tw, sw)
+            return analyze_stock(s, "1d", pd, ld, st, ue, urd, ust, rfr, mi, cw, tw, sw, rrp)
 
         daily_predict_btn.click(
             fn=daily_analysis,
             inputs=[daily_symbol, daily_prediction_days, daily_lookback_days, daily_strategy,
                    use_ensemble, use_regime_detection, use_stress_testing, risk_free_rate, market_index,
-                   chronos_weight, technical_weight, statistical_weight],
+                   chronos_weight, technical_weight, statistical_weight,
+                   random_real_points],
             outputs=[daily_signals, daily_plot, daily_metrics, daily_risk_metrics, daily_sector_metrics,
                     daily_regime_metrics, daily_stress_results, daily_ensemble_metrics, daily_signals_advanced]
         )
         
         # Hourly analysis button click
         def hourly_analysis(s: str, pd: int, ld: int, st: str, ue: bool, urd: bool, ust: bool,
-                           rfr: float, mi: str, cw: float, tw: float, sw: float) -> Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict]:
+                           rfr: float, mi: str, cw: float, tw: float, sw: float,
+                           rrp: int) -> Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict]:
             """
             Process hourly timeframe stock analysis with advanced features.
 
@@ -2185,6 +2338,7 @@ def create_interface():
                     Weight for technical analysis in ensemble predictions
                 sw (float): Statistical weight in ensemble (0.0-1.0)
                     Weight for statistical models in ensemble predictions
+                rrp (int): Number of random real points to include in long-horizon context
 
             Returns:
                 Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict]: Analysis results containing:
@@ -2204,7 +2358,7 @@ def create_interface():
 
             Example:
                 >>> signals, plot, metrics, risk, sector, regime, stress, ensemble, advanced = hourly_analysis(
-                ...     "AAPL", 3, 14, "chronos", True, True, True, 0.02, "^GSPC", 0.6, 0.2, 0.2
+                ...     "AAPL", 3, 14, "chronos", True, True, True, 0.02, "^GSPC", 0.6, 0.2, 0.2, 4
                 ... )
 
             Notes:
@@ -2215,20 +2369,22 @@ def create_interface():
                 - Optimized for day trading and swing trading strategies
                 - Requires high-liquidity stocks for reliable hourly analysis
             """
-            return analyze_stock(s, "1h", pd, ld, st, ue, urd, ust, rfr, mi, cw, tw, sw)
+            return analyze_stock(s, "1h", pd, ld, st, ue, urd, ust, rfr, mi, cw, tw, sw, rrp)
 
         hourly_predict_btn.click(
             fn=hourly_analysis,
             inputs=[hourly_symbol, hourly_prediction_days, hourly_lookback_days, hourly_strategy,
                    use_ensemble, use_regime_detection, use_stress_testing, risk_free_rate, market_index,
-                   chronos_weight, technical_weight, statistical_weight],
+                   chronos_weight, technical_weight, statistical_weight,
+                   random_real_points],
             outputs=[hourly_signals, hourly_plot, hourly_metrics, hourly_risk_metrics, hourly_sector_metrics,
                     hourly_regime_metrics, hourly_stress_results, hourly_ensemble_metrics, hourly_signals_advanced]
         )
         
         # 15-minute analysis button click
         def min15_analysis(s: str, pd: int, ld: int, st: str, ue: bool, urd: bool, ust: bool,
-                          rfr: float, mi: str, cw: float, tw: float, sw: float) -> Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict]:
+                          rfr: float, mi: str, cw: float, tw: float, sw: float,
+                          rrp: int) -> Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict]:
             """
             Process 15-minute timeframe stock analysis with advanced features.
 
@@ -2262,6 +2418,7 @@ def create_interface():
                     Weight for technical analysis in ensemble predictions
                 sw (float): Statistical weight in ensemble (0.0-1.0)
                     Weight for statistical models in ensemble predictions
+                rrp (int): Number of random real points to include in long-horizon context
 
             Returns:
                 Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict]: Analysis results containing:
@@ -2281,7 +2438,7 @@ def create_interface():
 
             Example:
                 >>> signals, plot, metrics, risk, sector, regime, stress, ensemble, advanced = min15_analysis(
-                ...     "AAPL", 1, 3, "chronos", True, True, True, 0.02, "^GSPC", 0.6, 0.2, 0.2
+                ...     "AAPL", 1, 3, "chronos", True, True, True, 0.02, "^GSPC", 0.6, 0.2, 0.2, 4
                 ... )
 
             Notes:
@@ -2294,13 +2451,14 @@ def create_interface():
                 - Higher transaction costs and slippage considerations for 15-minute strategies
                 - Best suited for highly liquid large-cap stocks with tight bid-ask spreads
             """
-            return analyze_stock(s, "15m", pd, ld, st, ue, urd, ust, rfr, mi, cw, tw, sw)
+            return analyze_stock(s, "15m", pd, ld, st, ue, urd, ust, rfr, mi, cw, tw, sw, rrp)
 
         min15_predict_btn.click(
             fn=min15_analysis,
             inputs=[min15_symbol, min15_prediction_days, min15_lookback_days, min15_strategy,
                    use_ensemble, use_regime_detection, use_stress_testing, risk_free_rate, market_index,
-                   chronos_weight, technical_weight, statistical_weight],
+                   chronos_weight, technical_weight, statistical_weight,
+                   random_real_points],
             outputs=[min15_signals, min15_plot, min15_metrics, min15_risk_metrics, min15_sector_metrics,
                     min15_regime_metrics, min15_stress_results, min15_ensemble_metrics, min15_signals_advanced]
         )
