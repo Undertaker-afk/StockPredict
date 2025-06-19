@@ -400,9 +400,13 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                 # Prepare data for Chronos
                 prices = df['Close'].values
                 window_size = 64  # Chronos context window size
+                # Use a larger range for scaler fitting to get better normalization
+                scaler_range = min(len(prices), window_size * 2)  # Use up to 128 points for scaler
                 context_window = prices[-window_size:]
                 scaler = MinMaxScaler(feature_range=(-1, 1))
-                normalized_prices = scaler.fit_transform(context_window.reshape(-1, 1)).flatten()
+                # Fit scaler on a larger range for better normalization
+                scaler.fit(prices[-scaler_range:].reshape(-1, 1))
+                normalized_prices = scaler.transform(context_window.reshape(-1, 1)).flatten()
                 
                 # Ensure we have enough data points
                 min_data_points = window_size
@@ -635,11 +639,24 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                 # Calculate standard deviation from quantiles
                 std_pred = (upper_bound - lower_bound) / (2 * 1.645)
                 
-                # Check for discontinuity between last actual and first prediction
+                # Check for discontinuity and apply continuity correction
                 last_actual = prices[-1]
                 first_pred = mean_pred[0]
-                if abs(first_pred - last_actual) > max(1e-6, 0.05 * abs(last_actual)):
+                if abs(first_pred - last_actual) > max(1e-6, 0.005 * abs(last_actual)):  # Further reduced threshold
                     print(f"Warning: Discontinuity detected between last actual ({last_actual}) and first prediction ({first_pred})")
+                    # Apply continuity correction to first prediction
+                    mean_pred[0] = last_actual
+                    # Adjust subsequent predictions to maintain trend with smoothing
+                    if len(mean_pred) > 1:
+                        # Calculate the trend from the original prediction
+                        original_trend = mean_pred[1] - first_pred
+                        # Apply the same trend but starting from the last actual value
+                        for i in range(1, len(mean_pred)):
+                            mean_pred[i] = last_actual + original_trend * i
+                            # Add small smoothing to prevent drift
+                            if i > 1:
+                                smoothing_factor = 0.95
+                                mean_pred[i] = smoothing_factor * mean_pred[i] + (1 - smoothing_factor) * mean_pred[i-1]
                 
                 # If we had to limit the prediction length, extend the prediction recursively
                 if actual_prediction_length < trim_length:
@@ -711,9 +728,12 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                     if len(volume_data) >= 64:
                         # Normalize volume data
                         window_size = 64
+                        scaler_range = min(len(volume_data), window_size * 2)
                         context_window = volume_data[-window_size:]
                         volume_scaler = MinMaxScaler(feature_range=(-1, 1))
-                        normalized_volume = volume_scaler.fit_transform(context_window.reshape(-1, 1)).flatten()
+                        # Fit scaler on a larger range for better normalization
+                        volume_scaler.fit(volume_data[-scaler_range:].reshape(-1, 1))
+                        normalized_volume = volume_scaler.transform(context_window.reshape(-1, 1)).flatten()
                         if len(normalized_volume) < window_size:
                             padding = np.full(window_size - len(normalized_volume), normalized_volume[-1])
                             normalized_volume = np.concatenate([padding, normalized_volume])
@@ -736,9 +756,21 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                         std_pred_vol = (upper_bound - lower_bound) / (2 * 1.645)
                         last_actual = volume_data[-1]
                         first_pred = volume_pred[0]
-                        if abs(first_pred - last_actual) > max(1e-6, 0.05 * abs(last_actual)):
+                        if abs(first_pred - last_actual) > max(1e-6, 0.005 * abs(last_actual)):  # Further reduced threshold
                             print(f"Warning: Discontinuity detected between last actual volume ({last_actual}) and first prediction ({first_pred})")
-
+                            # Apply continuity correction
+                            volume_pred[0] = last_actual
+                            # Adjust subsequent predictions to maintain trend with smoothing
+                            if len(volume_pred) > 1:
+                                # Calculate the trend from the original prediction
+                                original_trend = volume_pred[1] - first_pred
+                                # Apply the same trend but starting from the last actual value
+                                for i in range(1, len(volume_pred)):
+                                    volume_pred[i] = last_actual + original_trend * i
+                                    # Add small smoothing to prevent drift
+                                    if i > 1:
+                                        smoothing_factor = 0.95
+                                        volume_pred[i] = smoothing_factor * volume_pred[i] + (1 - smoothing_factor) * volume_pred[i-1]
                         # Extend volume predictions if needed
                         if actual_prediction_length < trim_length:
                             extended_mean_pred = volume_pred.copy()
@@ -802,9 +834,12 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                     if len(rsi_data) >= 64 and not np.any(np.isnan(rsi_data)):
                         # RSI is already normalized (0-100), but we'll scale it to (-1, 1)
                         window_size = 64
+                        scaler_range = min(len(rsi_data), window_size * 2)
                         context_window = rsi_data[-window_size:]
                         rsi_scaler = MinMaxScaler(feature_range=(-1, 1))
-                        normalized_rsi = rsi_scaler.fit_transform(context_window.reshape(-1, 1)).flatten()
+                        # Fit scaler on a larger range for better normalization
+                        rsi_scaler.fit(rsi_data[-scaler_range:].reshape(-1, 1))
+                        normalized_rsi = rsi_scaler.transform(context_window.reshape(-1, 1)).flatten()
                         if len(normalized_rsi) < window_size:
                             padding = np.full(window_size - len(normalized_rsi), normalized_rsi[-1])
                             normalized_rsi = np.concatenate([padding, normalized_rsi])
@@ -830,8 +865,14 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                         rsi_pred = np.clip(rsi_pred, 0, 100)
                         last_actual = rsi_data[-1]
                         first_pred = rsi_pred[0]
-                        if abs(first_pred - last_actual) > max(1e-6, 0.05 * abs(last_actual)):
+                        if abs(first_pred - last_actual) > max(1e-6, 0.005 * abs(last_actual)):  # Further reduced threshold
                             print(f"Warning: Discontinuity detected between last actual RSI ({last_actual}) and first prediction ({first_pred})")
+                            # Apply continuity correction
+                            rsi_pred[0] = last_actual
+                            if len(rsi_pred) > 1:
+                                trend = rsi_pred[1] - first_pred
+                                rsi_pred[1:] = rsi_pred[1:] - first_pred + last_actual
+                                rsi_pred = np.clip(rsi_pred, 0, 100)  # Re-clip after adjustment
                         # Extend RSI predictions if needed
                         if actual_prediction_length < trim_length:
                             extended_mean_pred = rsi_pred.copy()
@@ -873,7 +914,7 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                                 next_upper = rsi_scaler.inverse_transform(next_quantiles[0, :, 2].reshape(-1, 1)).flatten()
                                 next_std_pred = (next_upper - next_lower) / (2 * 1.645)
                                 next_mean_pred = np.clip(next_mean_pred, 0, 100)
-                                if abs(next_mean_pred[0] - extended_mean_pred[-1]) > max(1e-6, 0.05 * abs(extended_mean_pred[-1])):
+                                if abs(next_mean_pred[0] - extended_mean_pred[-1]) > max(1e-6, 0.005 * abs(extended_mean_pred[-1])):
                                     print(f"Warning: Discontinuity detected between last RSI prediction ({extended_mean_pred[-1]}) and next prediction ({next_mean_pred[0]})")
                                 extended_mean_pred = np.concatenate([extended_mean_pred, next_mean_pred])
                                 extended_std_pred = np.concatenate([extended_std_pred, next_std_pred])
@@ -895,9 +936,12 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                     if len(macd_data) >= 64 and not np.any(np.isnan(macd_data)):
                         # Normalize MACD data
                         window_size = 64
+                        scaler_range = min(len(macd_data), window_size * 2)
                         context_window = macd_data[-window_size:]
                         macd_scaler = MinMaxScaler(feature_range=(-1, 1))
-                        normalized_macd = macd_scaler.fit_transform(context_window.reshape(-1, 1)).flatten()
+                        # Fit scaler on a larger range for better normalization
+                        macd_scaler.fit(macd_data[-scaler_range:].reshape(-1, 1))
+                        normalized_macd = macd_scaler.transform(context_window.reshape(-1, 1)).flatten()
                         if len(normalized_macd) < window_size:
                             padding = np.full(window_size - len(normalized_macd), normalized_macd[-1])
                             normalized_macd = np.concatenate([padding, normalized_macd])
@@ -923,8 +967,21 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                         first_pred = macd_pred[0]
 
                         # Extend MACD predictions if needed
-                        if abs(first_pred - last_actual) > max(1e-6, 0.05 * abs(last_actual)):
+                        if abs(first_pred - last_actual) > max(1e-6, 0.005 * abs(last_actual)):  # Further reduced threshold
                             print(f"Warning: Discontinuity detected between last actual MACD ({last_actual}) and first prediction ({first_pred})")
+                            # Apply continuity correction
+                            macd_pred[0] = last_actual
+                            # Adjust subsequent predictions to maintain trend with smoothing
+                            if len(macd_pred) > 1:
+                                # Calculate the trend from the original prediction
+                                original_trend = macd_pred[1] - first_pred
+                                # Apply the same trend but starting from the last actual value
+                                for i in range(1, len(macd_pred)):
+                                    macd_pred[i] = last_actual + original_trend * i
+                                    # Add small smoothing to prevent drift
+                                    if i > 1:
+                                        smoothing_factor = 0.95
+                                        macd_pred[i] = smoothing_factor * macd_pred[i] + (1 - smoothing_factor) * macd_pred[i-1]
                         if actual_prediction_length < trim_length:
                             extended_mean_pred = macd_pred.copy()
                             extended_std_pred = std_pred_macd.copy()
