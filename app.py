@@ -366,7 +366,7 @@ def calculate_bollinger_bands(prices: pd.Series, period: int = 20, std_dev: int 
     lower_band = middle_band - (std * std_dev)
     return upper_band, middle_band, lower_band
 
-@spaces.GPU(duration=180)
+@spaces.GPU()
 def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5, strategy: str = "chronos",
                    use_ensemble: bool = True, use_regime_detection: bool = True, use_stress_testing: bool = True,
                    risk_free_rate: float = 0.02, ensemble_weights: Dict = None, 
@@ -2079,22 +2079,64 @@ def create_interface():
             """
             Process daily timeframe stock analysis with advanced features.
 
+            This function performs comprehensive stock analysis using daily data with support for
+            multiple prediction strategies, ensemble methods, regime detection, and stress testing.
+            It's designed for medium to long-term investment analysis with up to 365 days of prediction.
+
             Args:
-                s (str): Stock symbol (e.g., "AAPL", "MSFT", "GOOGL")
+                s (str): Stock symbol (e.g., "AAPL", "MSFT", "GOOGL", "TSLA")
+                    Must be a valid stock symbol available on Yahoo Finance
                 pd (int): Number of days to predict (1-365)
+                    The forecast horizon for the analysis. Longer periods may have higher uncertainty
                 ld (int): Historical lookback period in days (1-3650)
+                    Amount of historical data to use for analysis. More data generally improves accuracy
                 st (str): Prediction strategy to use ("chronos" or "technical")
+                    - "chronos": Uses Amazon's Chronos T5 model for time series forecasting
+                    - "technical": Uses traditional technical analysis indicators
                 ue (bool): Use ensemble methods
+                    When True, combines multiple prediction models for improved accuracy
                 urd (bool): Use regime detection
+                    When True, detects market regimes (bull/bear/sideways) to adjust predictions
                 ust (bool): Use stress testing
-                rfr (float): Risk-free rate
-                mi (str): Market index
-                cw (float): Chronos weight
-                tw (float): Technical weight
-                sw (float): Statistical weight
+                    When True, performs scenario analysis under various market conditions
+                rfr (float): Risk-free rate (0.0-0.1)
+                    Annual risk-free rate used for risk-adjusted return calculations
+                mi (str): Market index for correlation analysis
+                    Options: "^GSPC" (S&P 500), "^DJI" (Dow Jones), "^IXIC" (NASDAQ), "^RUT" (Russell 2000)
+                cw (float): Chronos weight in ensemble (0.0-1.0)
+                    Weight given to Chronos model predictions in ensemble methods
+                tw (float): Technical weight in ensemble (0.0-1.0)
+                    Weight given to technical analysis predictions in ensemble methods
+                sw (float): Statistical weight in ensemble (0.0-1.0)
+                    Weight given to statistical model predictions in ensemble methods
 
             Returns:
-                Tuple containing all analysis results
+                Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict]: Analysis results containing:
+                    - Dict: Basic trading signals (RSI, MACD, Bollinger Bands, SMA, Overall)
+                    - go.Figure: Interactive plot with historical data, predictions, and confidence intervals
+                    - Dict: Structured product metrics (Market Cap, P/E ratios, financial ratios)
+                    - Dict: Advanced risk metrics (Sharpe ratio, VaR, drawdown, correlation)
+                    - Dict: Sector and industry analysis metrics
+                    - Dict: Market regime detection results
+                    - Dict: Stress testing scenario results
+                    - Dict: Ensemble method configuration and results
+                    - Dict: Advanced trading signals with confidence levels
+
+            Raises:
+                gr.Error: If data cannot be fetched, insufficient data points, or other analysis errors
+                    Common errors include invalid symbols, market closure, or insufficient historical data
+
+            Example:
+                >>> signals, plot, metrics, risk, sector, regime, stress, ensemble, advanced = daily_analysis(
+                ...     "AAPL", 30, 365, "chronos", True, True, True, 0.02, "^GSPC", 0.6, 0.2, 0.2
+                ... )
+
+            Notes:
+                - Daily analysis is available 24/7 regardless of market hours
+                - Maximum prediction period is 365 days
+                - Historical data can go back up to 10 years (3650 days)
+                - Ensemble weights should sum to 1.0 for optimal results
+                - Risk-free rate is typically between 0.02-0.05 (2-5% annually)
             """
             return analyze_stock(s, "1d", pd, ld, st, ue, urd, ust, rfr, mi, cw, tw, sw)
 
@@ -2113,22 +2155,65 @@ def create_interface():
             """
             Process hourly timeframe stock analysis with advanced features.
 
+            This function performs high-frequency stock analysis using hourly data, ideal for
+            short to medium-term trading strategies. It includes intraday volatility analysis,
+            volume-price trends, and momentum indicators optimized for hourly timeframes.
+
             Args:
-                s (str): Stock symbol (e.g., "AAPL", "MSFT", "GOOGL")
+                s (str): Stock symbol (e.g., "AAPL", "MSFT", "GOOGL", "TSLA")
+                    Must be a valid stock symbol with sufficient liquidity for hourly analysis
                 pd (int): Number of days to predict (1-7)
+                    Limited to 7 days due to Yahoo Finance hourly data constraints
                 ld (int): Historical lookback period in days (1-60)
+                    Enhanced to 60 days for hourly data (vs standard 30 days)
                 st (str): Prediction strategy to use ("chronos" or "technical")
+                    - "chronos": Uses Amazon's Chronos T5 model optimized for hourly data
+                    - "technical": Uses technical indicators adjusted for hourly timeframes
                 ue (bool): Use ensemble methods
+                    Combines multiple models for improved short-term prediction accuracy
                 urd (bool): Use regime detection
+                    Detects intraday market regimes and volatility patterns
                 ust (bool): Use stress testing
-                rfr (float): Risk-free rate
-                mi (str): Market index
-                cw (float): Chronos weight
-                tw (float): Technical weight
-                sw (float): Statistical weight
+                    Performs scenario analysis for short-term market shocks
+                rfr (float): Risk-free rate (0.0-0.1)
+                    Annual risk-free rate for risk-adjusted calculations
+                mi (str): Market index for correlation analysis
+                    Options: "^GSPC" (S&P 500), "^DJI" (Dow Jones), "^IXIC" (NASDAQ), "^RUT" (Russell 2000)
+                cw (float): Chronos weight in ensemble (0.0-1.0)
+                    Weight for Chronos model in ensemble predictions
+                tw (float): Technical weight in ensemble (0.0-1.0)
+                    Weight for technical analysis in ensemble predictions
+                sw (float): Statistical weight in ensemble (0.0-1.0)
+                    Weight for statistical models in ensemble predictions
 
             Returns:
-                Tuple containing all analysis results
+                Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict]: Analysis results containing:
+                    - Dict: Basic trading signals optimized for hourly timeframes
+                    - go.Figure: Interactive plot with hourly data, predictions, and intraday patterns
+                    - Dict: Product metrics including intraday volatility and volume analysis
+                    - Dict: Risk metrics adjusted for hourly data frequency
+                    - Dict: Sector analysis with intraday-specific metrics
+                    - Dict: Market regime detection for hourly patterns
+                    - Dict: Stress testing results for short-term scenarios
+                    - Dict: Ensemble analysis configuration and results
+                    - Dict: Advanced signals with intraday-specific indicators
+
+            Raises:
+                gr.Error: If market is closed, insufficient data, or analysis errors
+                    Hourly data is only available during market hours (9:30 AM - 4:00 PM ET)
+
+            Example:
+                >>> signals, plot, metrics, risk, sector, regime, stress, ensemble, advanced = hourly_analysis(
+                ...     "AAPL", 3, 14, "chronos", True, True, True, 0.02, "^GSPC", 0.6, 0.2, 0.2
+                ... )
+
+            Notes:
+                - Only available during market hours (9:30 AM - 4:00 PM ET, weekdays)
+                - Maximum prediction period is 7 days (168 hours)
+                - Historical data limited to 60 days due to Yahoo Finance constraints
+                - Includes pre/post market data for extended hours analysis
+                - Optimized for day trading and swing trading strategies
+                - Requires high-liquidity stocks for reliable hourly analysis
             """
             return analyze_stock(s, "1h", pd, ld, st, ue, urd, ust, rfr, mi, cw, tw, sw)
 
@@ -2147,22 +2232,67 @@ def create_interface():
             """
             Process 15-minute timeframe stock analysis with advanced features.
 
+            This function performs ultra-high-frequency stock analysis using 15-minute data,
+            designed for scalping and very short-term trading strategies. It includes specialized
+            indicators for intraday patterns, volume analysis, and momentum detection.
+
             Args:
-                s (str): Stock symbol (e.g., "AAPL", "MSFT", "GOOGL")
+                s (str): Stock symbol (e.g., "AAPL", "MSFT", "GOOGL", "TSLA")
+                    Must be a highly liquid stock symbol suitable for high-frequency analysis
                 pd (int): Number of days to predict (1-2)
+                    Limited to 2 days due to 15-minute data granularity and model constraints
                 ld (int): Historical lookback period in days (1-7)
+                    Enhanced to 7 days for 15-minute data (vs standard 5 days)
                 st (str): Prediction strategy to use ("chronos" or "technical")
+                    - "chronos": Uses Amazon's Chronos T5 model optimized for 15-minute intervals
+                    - "technical": Uses technical indicators specifically tuned for 15-minute timeframes
                 ue (bool): Use ensemble methods
+                    Combines multiple models for improved ultra-short-term prediction accuracy
                 urd (bool): Use regime detection
+                    Detects micro-market regimes and volatility clustering patterns
                 ust (bool): Use stress testing
-                rfr (float): Risk-free rate
-                mi (str): Market index
-                cw (float): Chronos weight
-                tw (float): Technical weight
-                sw (float): Statistical weight
+                    Performs scenario analysis for intraday market shocks and volatility spikes
+                rfr (float): Risk-free rate (0.0-0.1)
+                    Annual risk-free rate for risk-adjusted calculations (less relevant for 15m analysis)
+                mi (str): Market index for correlation analysis
+                    Options: "^GSPC" (S&P 500), "^DJI" (Dow Jones), "^IXIC" (NASDAQ), "^RUT" (Russell 2000)
+                cw (float): Chronos weight in ensemble (0.0-1.0)
+                    Weight for Chronos model in ensemble predictions
+                tw (float): Technical weight in ensemble (0.0-1.0)
+                    Weight for technical analysis in ensemble predictions
+                sw (float): Statistical weight in ensemble (0.0-1.0)
+                    Weight for statistical models in ensemble predictions
 
             Returns:
-                Tuple containing all analysis results
+                Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict]: Analysis results containing:
+                    - Dict: Basic trading signals optimized for 15-minute timeframes
+                    - go.Figure: Interactive plot with 15-minute data, predictions, and micro-patterns
+                    - Dict: Product metrics including high-frequency volatility and volume analysis
+                    - Dict: Risk metrics adjusted for 15-minute data frequency
+                    - Dict: Sector analysis with ultra-short-term metrics
+                    - Dict: Market regime detection for 15-minute patterns
+                    - Dict: Stress testing results for intraday scenarios
+                    - Dict: Ensemble analysis configuration and results
+                    - Dict: Advanced signals with 15-minute-specific indicators
+
+            Raises:
+                gr.Error: If market is closed, insufficient data points, or analysis errors
+                    15-minute data requires at least 64 data points and is only available during market hours
+
+            Example:
+                >>> signals, plot, metrics, risk, sector, regime, stress, ensemble, advanced = min15_analysis(
+                ...     "AAPL", 1, 3, "chronos", True, True, True, 0.02, "^GSPC", 0.6, 0.2, 0.2
+                ... )
+
+            Notes:
+                - Only available during market hours (9:30 AM - 4:00 PM ET, weekdays)
+                - Maximum prediction period is 2 days (192 15-minute intervals)
+                - Historical data limited to 7 days due to Yahoo Finance constraints
+                - Requires minimum 64 data points for reliable Chronos predictions
+                - Optimized for scalping and very short-term trading strategies
+                - Includes specialized indicators for intraday momentum and volume analysis
+                - Higher transaction costs and slippage considerations for 15-minute strategies
+                - Best suited for highly liquid large-cap stocks with tight bid-ask spreads
             """
             return analyze_stock(s, "15m", pd, ld, st, ue, urd, ust, rfr, mi, cw, tw, sw)
 
