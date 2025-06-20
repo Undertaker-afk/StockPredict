@@ -371,7 +371,7 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                    use_ensemble: bool = True, use_regime_detection: bool = True, use_stress_testing: bool = True,
                    risk_free_rate: float = 0.02, ensemble_weights: Dict = None, 
                    market_index: str = "^GSPC",
-                   random_real_points: int = 4) -> Tuple[Dict, go.Figure]:
+                   random_real_points: int = 4, use_smoothing: bool = True) -> Tuple[Dict, go.Figure]:
     """
     Make prediction using selected strategy with advanced features.
     
@@ -387,6 +387,7 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
         ensemble_weights (Dict): Weights for ensemble models
         market_index (str): Market index for correlation analysis
         random_real_points (int): Number of random real points to include in long-horizon context
+        use_smoothing (bool): Whether to apply smoothing to predictions
     
     Returns:
         Tuple[Dict, go.Figure]: Trading signals and visualization plot
@@ -646,15 +647,15 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                     print(f"Warning: Discontinuity detected between last actual ({last_actual}) and first prediction ({first_pred})")
                     # Apply continuity correction to first prediction
                     mean_pred[0] = last_actual
-                    # Adjust subsequent predictions to maintain trend with smoothing
+                    # Adjust subsequent predictions to maintain trend with optional smoothing
                     if len(mean_pred) > 1:
                         # Calculate the trend from the original prediction
                         original_trend = mean_pred[1] - first_pred
                         # Apply the same trend but starting from the last actual value
                         for i in range(1, len(mean_pred)):
                             mean_pred[i] = last_actual + original_trend * i
-                            # Add small smoothing to prevent drift
-                            if i > 1:
+                            # Add smoothing to prevent drift if enabled
+                            if use_smoothing and i > 1:
                                 smoothing_factor = 0.95
                                 mean_pred[i] = smoothing_factor * mean_pred[i] + (1 - smoothing_factor) * mean_pred[i-1]
                 
@@ -668,8 +669,16 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                     steps_needed = (remaining_steps + actual_prediction_length - 1) // actual_prediction_length
                     for step in range(steps_needed):
                         
-                        # Use last window_size points as context for next prediction
-                        context_window = np.concatenate([prices, extended_mean_pred])[-window_size:]
+                        # Use all available datapoints for context, prioritizing actual data over predictions
+                        all_available_data = np.concatenate([prices, extended_mean_pred])
+                        
+                        # If we have more data than window_size, use the most recent window_size points
+                        # Otherwise, use all available data (this allows for longer context when available)
+                        if len(all_available_data) > window_size:
+                            context_window = all_available_data[-window_size:]
+                        else:
+                            context_window = all_available_data
+                        
                         scaler = MinMaxScaler(feature_range=(-1, 1))
 
                         # Convert to tensor and ensure proper shape
@@ -760,15 +769,15 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                             print(f"Warning: Discontinuity detected between last actual volume ({last_actual}) and first prediction ({first_pred})")
                             # Apply continuity correction
                             volume_pred[0] = last_actual
-                            # Adjust subsequent predictions to maintain trend with smoothing
+                            # Adjust subsequent predictions to maintain trend with optional smoothing
                             if len(volume_pred) > 1:
                                 # Calculate the trend from the original prediction
                                 original_trend = volume_pred[1] - first_pred
                                 # Apply the same trend but starting from the last actual value
                                 for i in range(1, len(volume_pred)):
                                     volume_pred[i] = last_actual + original_trend * i
-                                    # Add small smoothing to prevent drift
-                                    if i > 1:
+                                    # Add smoothing to prevent drift if enabled
+                                    if use_smoothing and i > 1:
                                         smoothing_factor = 0.95
                                         volume_pred[i] = smoothing_factor * volume_pred[i] + (1 - smoothing_factor) * volume_pred[i-1]
                         # Extend volume predictions if needed
@@ -778,22 +787,16 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                             remaining_steps = trim_length - actual_prediction_length
                             steps_needed = (remaining_steps + actual_prediction_length - 1) // actual_prediction_length
                             for step in range(steps_needed):
-                                # Use as much actual data as possible, then fill with predictions
-                                n_actual = max(0, window_size - len(extended_mean_pred))
-                                n_pred = window_size - n_actual
-                                if n_actual > 0:
-                                    context_window = np.concatenate([
-                                        volume_data[-n_actual:],
-                                        extended_mean_pred[-n_pred:] if n_pred > 0 else np.array([])
-                                    ])
+                                # Use all available datapoints for context, prioritizing actual data over predictions
+                                all_available_data = np.concatenate([volume_data, extended_mean_pred])
+                                
+                                # If we have more data than window_size, use the most recent window_size points
+                                # Otherwise, use all available data (this allows for longer context when available)
+                                if len(all_available_data) > window_size:
+                                    context_window = all_available_data[-window_size:]
                                 else:
-                                    # All synthetic, but add a few random real points
-                                    n_random_real = min(random_real_points, len(volume_data))
-                                    random_real = np.random.choice(volume_data, size=n_random_real, replace=False)
-                                    context_window = np.concatenate([
-                                        extended_mean_pred[-(window_size - n_random_real):],
-                                        random_real
-                                    ])
+                                    context_window = all_available_data
+                                
                                 volume_scaler = MinMaxScaler(feature_range=(-1, 1))
                                 normalized_context = volume_scaler.fit_transform(context_window.reshape(-1, 1)).flatten()
                                 context = torch.tensor(normalized_context, dtype=dtype, device=device)
@@ -880,21 +883,16 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                             remaining_steps = trim_length - actual_prediction_length
                             steps_needed = (remaining_steps + actual_prediction_length - 1) // actual_prediction_length
                             for step in range(steps_needed):
-                                n_actual = max(0, window_size - len(extended_mean_pred))
-                                n_pred = window_size - n_actual
-                                if n_actual > 0:
-                                    context_window = np.concatenate([
-                                        rsi_data[-n_actual:],
-                                        extended_mean_pred[-n_pred:] if n_pred > 0 else np.array([])
-                                    ])
+                                # Use all available datapoints for context, prioritizing actual data over predictions
+                                all_available_data = np.concatenate([rsi_data, extended_mean_pred])
+                                
+                                # If we have more data than window_size, use the most recent window_size points
+                                # Otherwise, use all available data (this allows for longer context when available)
+                                if len(all_available_data) > window_size:
+                                    context_window = all_available_data[-window_size:]
                                 else:
-                                    # All synthetic, but add a few random real points
-                                    n_random_real = min(random_real_points, len(rsi_data))
-                                    random_real = np.random.choice(rsi_data, size=n_random_real, replace=False)
-                                    context_window = np.concatenate([
-                                        extended_mean_pred[-(window_size - n_random_real):],
-                                        random_real
-                                    ])
+                                    context_window = all_available_data
+                                
                                 rsi_scaler = MinMaxScaler(feature_range=(-1, 1))
                                 normalized_context = rsi_scaler.fit_transform(context_window.reshape(-1, 1)).flatten()
                                 context = torch.tensor(normalized_context, dtype=dtype, device=device)
@@ -971,15 +969,15 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                             print(f"Warning: Discontinuity detected between last actual MACD ({last_actual}) and first prediction ({first_pred})")
                             # Apply continuity correction
                             macd_pred[0] = last_actual
-                            # Adjust subsequent predictions to maintain trend with smoothing
+                            # Adjust subsequent predictions to maintain trend with optional smoothing
                             if len(macd_pred) > 1:
                                 # Calculate the trend from the original prediction
                                 original_trend = macd_pred[1] - first_pred
                                 # Apply the same trend but starting from the last actual value
                                 for i in range(1, len(macd_pred)):
                                     macd_pred[i] = last_actual + original_trend * i
-                                    # Add small smoothing to prevent drift
-                                    if i > 1:
+                                    # Add smoothing to prevent drift if enabled
+                                    if use_smoothing and i > 1:
                                         smoothing_factor = 0.95
                                         macd_pred[i] = smoothing_factor * macd_pred[i] + (1 - smoothing_factor) * macd_pred[i-1]
                         if actual_prediction_length < trim_length:
@@ -988,21 +986,16 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                             remaining_steps = trim_length - actual_prediction_length
                             steps_needed = (remaining_steps + actual_prediction_length - 1) // actual_prediction_length
                             for step in range(steps_needed):
-                                n_actual = max(0, window_size - len(extended_mean_pred))
-                                n_pred = window_size - n_actual
-                                if n_actual > 0:
-                                    context_window = np.concatenate([
-                                        macd_data[-n_actual:],
-                                        extended_mean_pred[-n_pred:] if n_pred > 0 else np.array([])
-                                    ])
+                                # Use all available datapoints for context, prioritizing actual data over predictions
+                                all_available_data = np.concatenate([macd_data, extended_mean_pred])
+                                
+                                # If we have more data than window_size, use the most recent window_size points
+                                # Otherwise, use all available data (this allows for longer context when available)
+                                if len(all_available_data) > window_size:
+                                    context_window = all_available_data[-window_size:]
                                 else:
-                                    # All synthetic, but add a few random real points
-                                    n_random_real = min(random_real_points, len(macd_data))
-                                    random_real = np.random.choice(macd_data, size=n_random_real, replace=False)
-                                    context_window = np.concatenate([
-                                        extended_mean_pred[-(window_size - n_random_real):],
-                                        random_real
-                                    ])
+                                    context_window = all_available_data
+                                
                                 macd_scaler = MinMaxScaler(feature_range=(-1, 1))
                                 normalized_context = macd_scaler.fit_transform(context_window.reshape(-1, 1)).flatten()
                                 context = torch.tensor(normalized_context, dtype=dtype, device=device)
@@ -1941,6 +1934,7 @@ def create_interface():
                     use_ensemble = gr.Checkbox(label="Use Ensemble Methods", value=True)
                     use_regime_detection = gr.Checkbox(label="Use Regime Detection", value=True)
                     use_stress_testing = gr.Checkbox(label="Use Stress Testing", value=True)
+                    use_smoothing = gr.Checkbox(label="Use Smoothing", value=True)
                     risk_free_rate = gr.Slider(
                         minimum=0.0,
                         maximum=0.1,
@@ -2174,7 +2168,7 @@ def create_interface():
         def analyze_stock(symbol, timeframe, prediction_days, lookback_days, strategy,
                          use_ensemble, use_regime_detection, use_stress_testing,
                          risk_free_rate, market_index, chronos_weight, technical_weight, statistical_weight,
-                         random_real_points):
+                         random_real_points, use_smoothing):
             try:
                 # Create ensemble weights
                 ensemble_weights = {
@@ -2199,7 +2193,8 @@ def create_interface():
                     risk_free_rate=risk_free_rate,
                     ensemble_weights=ensemble_weights,
                     market_index=market_index,
-                    random_real_points=random_real_points
+                    random_real_points=random_real_points,
+                    use_smoothing=use_smoothing
                 )
                 
                 # Get historical data for additional metrics
@@ -2282,7 +2277,7 @@ def create_interface():
         # Daily analysis button click
         def daily_analysis(s: str, pd: int, ld: int, st: str, ue: bool, urd: bool, ust: bool,
                           rfr: float, mi: str, cw: float, tw: float, sw: float,
-                          rrp: int) -> Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict]:
+                          rrp: int, usm: bool) -> Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict]:
             """
             Process daily timeframe stock analysis with advanced features.
 
@@ -2317,6 +2312,8 @@ def create_interface():
                 sw (float): Statistical weight in ensemble (0.0-1.0)
                     Weight given to statistical model predictions in ensemble methods
                 rrp (int): Number of random real points to include in long-horizon context
+                usm (bool): Use smoothing
+                    When True, applies smoothing to predictions to reduce noise and improve continuity
 
             Returns:
                 Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict]: Analysis results containing:
@@ -2336,7 +2333,7 @@ def create_interface():
 
             Example:
                 >>> signals, plot, metrics, risk, sector, regime, stress, ensemble, advanced = daily_analysis(
-                ...     "AAPL", 30, 365, "chronos", True, True, True, 0.02, "^GSPC", 0.6, 0.2, 0.2, 4
+                ...     "AAPL", 30, 365, "chronos", True, True, True, 0.02, "^GSPC", 0.6, 0.2, 0.2, 4, True
                 ... )
 
             Notes:
@@ -2345,15 +2342,16 @@ def create_interface():
                 - Historical data can go back up to 10 years (3650 days)
                 - Ensemble weights should sum to 1.0 for optimal results
                 - Risk-free rate is typically between 0.02-0.05 (2-5% annually)
+                - Smoothing helps reduce prediction noise but may reduce responsiveness to sudden changes
             """
-            return analyze_stock(s, "1d", pd, ld, st, ue, urd, ust, rfr, mi, cw, tw, sw, rrp)
+            return analyze_stock(s, "1d", pd, ld, st, ue, urd, ust, rfr, mi, cw, tw, sw, rrp, usm)
 
         daily_predict_btn.click(
             fn=daily_analysis,
             inputs=[daily_symbol, daily_prediction_days, daily_lookback_days, daily_strategy,
                    use_ensemble, use_regime_detection, use_stress_testing, risk_free_rate, market_index,
                    chronos_weight, technical_weight, statistical_weight,
-                   random_real_points],
+                   random_real_points, use_smoothing],
             outputs=[daily_signals, daily_plot, daily_metrics, daily_risk_metrics, daily_sector_metrics,
                     daily_regime_metrics, daily_stress_results, daily_ensemble_metrics, daily_signals_advanced]
         )
@@ -2361,7 +2359,7 @@ def create_interface():
         # Hourly analysis button click
         def hourly_analysis(s: str, pd: int, ld: int, st: str, ue: bool, urd: bool, ust: bool,
                            rfr: float, mi: str, cw: float, tw: float, sw: float,
-                           rrp: int) -> Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict]:
+                           rrp: int, usm: bool) -> Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict]:
             """
             Process hourly timeframe stock analysis with advanced features.
 
@@ -2396,6 +2394,8 @@ def create_interface():
                 sw (float): Statistical weight in ensemble (0.0-1.0)
                     Weight for statistical models in ensemble predictions
                 rrp (int): Number of random real points to include in long-horizon context
+                usm (bool): Use smoothing
+                    When True, applies smoothing to predictions to reduce noise and improve continuity
 
             Returns:
                 Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict]: Analysis results containing:
@@ -2415,7 +2415,7 @@ def create_interface():
 
             Example:
                 >>> signals, plot, metrics, risk, sector, regime, stress, ensemble, advanced = hourly_analysis(
-                ...     "AAPL", 3, 14, "chronos", True, True, True, 0.02, "^GSPC", 0.6, 0.2, 0.2, 4
+                ...     "AAPL", 3, 14, "chronos", True, True, True, 0.02, "^GSPC", 0.6, 0.2, 0.2, 4, True
                 ... )
 
             Notes:
@@ -2425,15 +2425,16 @@ def create_interface():
                 - Includes pre/post market data for extended hours analysis
                 - Optimized for day trading and swing trading strategies
                 - Requires high-liquidity stocks for reliable hourly analysis
+                - Smoothing helps reduce prediction noise but may reduce responsiveness to sudden changes
             """
-            return analyze_stock(s, "1h", pd, ld, st, ue, urd, ust, rfr, mi, cw, tw, sw, rrp)
+            return analyze_stock(s, "1h", pd, ld, st, ue, urd, ust, rfr, mi, cw, tw, sw, rrp, usm)
 
         hourly_predict_btn.click(
             fn=hourly_analysis,
             inputs=[hourly_symbol, hourly_prediction_days, hourly_lookback_days, hourly_strategy,
                    use_ensemble, use_regime_detection, use_stress_testing, risk_free_rate, market_index,
                    chronos_weight, technical_weight, statistical_weight,
-                   random_real_points],
+                   random_real_points, use_smoothing],
             outputs=[hourly_signals, hourly_plot, hourly_metrics, hourly_risk_metrics, hourly_sector_metrics,
                     hourly_regime_metrics, hourly_stress_results, hourly_ensemble_metrics, hourly_signals_advanced]
         )
@@ -2441,7 +2442,7 @@ def create_interface():
         # 15-minute analysis button click
         def min15_analysis(s: str, pd: int, ld: int, st: str, ue: bool, urd: bool, ust: bool,
                           rfr: float, mi: str, cw: float, tw: float, sw: float,
-                          rrp: int) -> Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict]:
+                          rrp: int, usm: bool) -> Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict]:
             """
             Process 15-minute timeframe stock analysis with advanced features.
 
@@ -2476,6 +2477,8 @@ def create_interface():
                 sw (float): Statistical weight in ensemble (0.0-1.0)
                     Weight for statistical models in ensemble predictions
                 rrp (int): Number of random real points to include in long-horizon context
+                usm (bool): Use smoothing
+                    When True, applies smoothing to predictions to reduce noise and improve continuity
 
             Returns:
                 Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict]: Analysis results containing:
@@ -2495,7 +2498,7 @@ def create_interface():
 
             Example:
                 >>> signals, plot, metrics, risk, sector, regime, stress, ensemble, advanced = min15_analysis(
-                ...     "AAPL", 1, 3, "chronos", True, True, True, 0.02, "^GSPC", 0.6, 0.2, 0.2, 4
+                ...     "AAPL", 1, 3, "chronos", True, True, True, 0.02, "^GSPC", 0.6, 0.2, 0.2, 4, True
                 ... )
 
             Notes:
@@ -2507,15 +2510,16 @@ def create_interface():
                 - Includes specialized indicators for intraday momentum and volume analysis
                 - Higher transaction costs and slippage considerations for 15-minute strategies
                 - Best suited for highly liquid large-cap stocks with tight bid-ask spreads
+                - Smoothing helps reduce prediction noise but may reduce responsiveness to sudden changes
             """
-            return analyze_stock(s, "15m", pd, ld, st, ue, urd, ust, rfr, mi, cw, tw, sw, rrp)
+            return analyze_stock(s, "15m", pd, ld, st, ue, urd, ust, rfr, mi, cw, tw, sw, rrp, usm)
 
         min15_predict_btn.click(
             fn=min15_analysis,
             inputs=[min15_symbol, min15_prediction_days, min15_lookback_days, min15_strategy,
                    use_ensemble, use_regime_detection, use_stress_testing, risk_free_rate, market_index,
                    chronos_weight, technical_weight, statistical_weight,
-                   random_real_points],
+                   random_real_points, use_smoothing],
             outputs=[min15_signals, min15_plot, min15_metrics, min15_risk_metrics, min15_sector_metrics,
                     min15_regime_metrics, min15_stress_results, min15_ensemble_metrics, min15_signals_advanced]
         )
