@@ -1395,8 +1395,46 @@ def detect_market_regime(returns: pd.Series, n_regimes: int = 3) -> Dict:
     Returns:
         Dict: Regime information including probabilities and characteristics
     """
+    def get_regime_name(regime_idx: int, means: List[float], volatilities: List[float]) -> str:
+        """
+        Convert regime index to descriptive name based on characteristics.
+        
+        Args:
+            regime_idx (int): Regime index (0, 1, 2)
+            means (List[float]): List of regime means
+            volatilities (List[float]): List of regime volatilities
+        
+        Returns:
+            str: Descriptive regime name
+        """
+        if len(means) != 3 or len(volatilities) != 3:
+            return f"Regime {regime_idx}"
+        
+        # Sort regimes by volatility (low to high)
+        vol_sorted = sorted(range(len(volatilities)), key=lambda i: volatilities[i])
+        
+        # Sort regimes by mean return (low to high)
+        mean_sorted = sorted(range(len(means)), key=lambda i: means[i])
+        
+        # Determine regime characteristics
+        if regime_idx == vol_sorted[0]:  # Lowest volatility
+            if means[regime_idx] > 0:
+                return "Low Volatility Bull"
+            else:
+                return "Low Volatility Bear"
+        elif regime_idx == vol_sorted[2]:  # Highest volatility
+            if means[regime_idx] > 0:
+                return "High Volatility Bull"
+            else:
+                return "High Volatility Bear"
+        else:  # Medium volatility
+            if means[regime_idx] > 0:
+                return "Moderate Bull"
+            else:
+                return "Moderate Bear"
+    
     if len(returns) < 50:
-        return {"regime": 1, "probabilities": [1.0], "volatility": returns.std()}
+        return {"regime": "Normal Market", "probabilities": [1.0], "volatility": returns.std()}
     
     try:
         if HMM_AVAILABLE:
@@ -1424,8 +1462,12 @@ def detect_market_regime(returns: pd.Series, n_regimes: int = 3) -> Dict:
                     regime_means = model.means_.flatten()
                     regime_vols = np.sqrt(model.covars_.diagonal(axis1=1, axis2=2)) if model.covariance_type == "full" else np.sqrt(model.covars_)
                     
+                    # Convert regime index to descriptive name
+                    regime_name = get_regime_name(int(current_regime), regime_means.tolist(), regime_vols.tolist())
+                    
                     return {
-                        "regime": int(current_regime),
+                        "regime": regime_name,
+                        "regime_index": int(current_regime),
                         "probabilities": regime_probs[-1].tolist(),
                         "means": regime_means.tolist(),
                         "volatilities": regime_vols.tolist(),
@@ -1442,21 +1484,25 @@ def detect_market_regime(returns: pd.Series, n_regimes: int = 3) -> Dict:
             vol_percentile = volatility.iloc[-1] / volatility.quantile(0.8)
             
             if vol_percentile > 1.2:
+                regime_name = "High Volatility Market"
                 regime = 2  # High volatility regime
             elif vol_percentile < 0.8:
+                regime_name = "Low Volatility Market"
                 regime = 0  # Low volatility regime
             else:
+                regime_name = "Normal Market"
                 regime = 1  # Normal regime
             
             return {
-                "regime": regime,
+                "regime": regime_name,
+                "regime_index": regime,
                 "probabilities": [0.1, 0.8, 0.1] if regime == 1 else [0.8, 0.1, 0.1] if regime == 0 else [0.1, 0.1, 0.8],
                 "volatility": volatility.iloc[-1],
                 "method": "Volatility-based"
             }
     except Exception as e:
         print(f"Warning: Regime detection failed: {str(e)}")
-        return {"regime": 1, "probabilities": [1.0], "volatility": returns.std(), "method": "Fallback"}
+        return {"regime": "Normal Market", "regime_index": 1, "probabilities": [1.0], "volatility": returns.std(), "method": "Fallback"}
 
 def calculate_advanced_risk_metrics(df: pd.DataFrame, market_returns: pd.Series = None, 
                                   risk_free_rate: float = 0.02) -> Dict:
