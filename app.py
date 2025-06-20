@@ -371,7 +371,9 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                    use_ensemble: bool = True, use_regime_detection: bool = True, use_stress_testing: bool = True,
                    risk_free_rate: float = 0.02, ensemble_weights: Dict = None, 
                    market_index: str = "^GSPC",
-                   random_real_points: int = 4, use_smoothing: bool = True) -> Tuple[Dict, go.Figure]:
+                   random_real_points: int = 4, use_smoothing: bool = True, 
+                   smoothing_type: str = "exponential", smoothing_window: int = 5, 
+                   smoothing_alpha: float = 0.3) -> Tuple[Dict, go.Figure]:
     """
     Make prediction using selected strategy with advanced features.
     
@@ -388,6 +390,7 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
         market_index (str): Market index for correlation analysis
         random_real_points (int): Number of random real points to include in long-horizon context
         use_smoothing (bool): Whether to apply smoothing to predictions
+        smoothing_type (str): Type of smoothing to apply ('exponential', 'moving_average', 'kalman', 'savitzky_golay', 'none')
     
     Returns:
         Tuple[Dict, go.Figure]: Trading signals and visualization plot
@@ -400,17 +403,22 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
             try:
                 # Prepare data for Chronos
                 prices = df['Close'].values
-                window_size = 64  # Chronos context window size
+                chronos_context_size = 64  # Chronos model's context window size (fixed at 64)
+                input_context_size = len(prices)  # Available input data can be much larger
+                
                 # Use a larger range for scaler fitting to get better normalization
-                scaler_range = min(len(prices), window_size * 2)  # Use up to 128 points for scaler
-                context_window = prices[-window_size:]
+                scaler_range = min(input_context_size, chronos_context_size * 2)  # Use up to 128 points for scaler
+                
+                # Select the most recent chronos_context_size points for the model input
+                context_window = prices[-chronos_context_size:]
+                
                 scaler = MinMaxScaler(feature_range=(-1, 1))
                 # Fit scaler on a larger range for better normalization
                 scaler.fit(prices[-scaler_range:].reshape(-1, 1))
                 normalized_prices = scaler.transform(context_window.reshape(-1, 1)).flatten()
                 
-                # Ensure we have enough data points
-                min_data_points = window_size
+                # Ensure we have enough data points for Chronos
+                min_data_points = chronos_context_size
                 if len(normalized_prices) < min_data_points:
                     padding = np.full(min_data_points - len(normalized_prices), normalized_prices[-1])
                     normalized_prices = np.concatenate([padding, normalized_prices])
@@ -431,15 +439,15 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                 
                 # Adjust prediction length based on timeframe
                 if timeframe == "1d":
-                    max_prediction_length = window_size  # 64 days
+                    max_prediction_length = chronos_context_size  # 64 days
                     actual_prediction_length = min(prediction_days, max_prediction_length)
                     trim_length = prediction_days
                 elif timeframe == "1h":
-                    max_prediction_length = window_size  # 64 hours
+                    max_prediction_length = chronos_context_size  # 64 hours
                     actual_prediction_length = min(prediction_days * 24, max_prediction_length)
                     trim_length = prediction_days * 24
                 else:  # 15m
-                    max_prediction_length = window_size  # 64 intervals
+                    max_prediction_length = chronos_context_size  # 64 intervals
                     actual_prediction_length = min(prediction_days * 96, max_prediction_length)
                     trim_length = prediction_days * 96
                 actual_prediction_length = max(1, actual_prediction_length)
@@ -654,35 +662,38 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                         # Apply the same trend but starting from the last actual value
                         for i in range(1, len(mean_pred)):
                             mean_pred[i] = last_actual + original_trend * i
-                            # Add smoothing to prevent drift if enabled
-                            if use_smoothing and i > 1:
-                                smoothing_factor = 0.95
-                                mean_pred[i] = smoothing_factor * mean_pred[i] + (1 - smoothing_factor) * mean_pred[i-1]
+                        
+                        # Apply financial smoothing if enabled
+                        if use_smoothing:
+                            mean_pred = apply_financial_smoothing(mean_pred, smoothing_type, smoothing_window, smoothing_alpha, 3, use_smoothing)
                 
                 # If we had to limit the prediction length, extend the prediction recursively
                 if actual_prediction_length < trim_length:
                     extended_mean_pred = mean_pred.copy()
                     extended_std_pred = std_pred.copy()
                     
+                    # Store the original scaler for consistency
+                    original_scaler = scaler
+                    
                     # Calculate the number of extension steps needed
                     remaining_steps = trim_length - actual_prediction_length
                     steps_needed = (remaining_steps + actual_prediction_length - 1) // actual_prediction_length
+                    
                     for step in range(steps_needed):
-                        
-                        # Use all available datapoints for context, prioritizing actual data over predictions
+                        # Use all available datapoints for context, including predictions
+                        # This allows the model to build upon its own predictions for better long-horizon forecasting
                         all_available_data = np.concatenate([prices, extended_mean_pred])
                         
-                        # If we have more data than window_size, use the most recent window_size points
+                        # If we have more data than chronos_context_size, use the most recent chronos_context_size points
                         # Otherwise, use all available data (this allows for longer context when available)
-                        if len(all_available_data) > window_size:
-                            context_window = all_available_data[-window_size:]
+                        if len(all_available_data) > chronos_context_size:
+                            context_window = all_available_data[-chronos_context_size:]
                         else:
                             context_window = all_available_data
                         
-                        scaler = MinMaxScaler(feature_range=(-1, 1))
-
-                        # Convert to tensor and ensure proper shape
-                        normalized_context = scaler.fit_transform(context_window.reshape(-1, 1)).flatten()
+                        # Use the original scaler to maintain consistency - fit on historical data only
+                        # but transform the combined context window
+                        normalized_context = original_scaler.transform(context_window.reshape(-1, 1)).flatten()
                         context = torch.tensor(normalized_context, dtype=dtype, device=device)
                         if len(context.shape) == 1:
                             context = context.unsqueeze(0)
@@ -694,6 +705,7 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                             next_length = min(max_prediction_length, remaining_steps)
                         else:
                             next_length = min(max_prediction_length, remaining_steps)
+                        
                         with torch.amp.autocast('cuda'):
                             next_quantiles, next_mean = pipe.predict_quantiles(
                                 context=context,
@@ -701,20 +713,33 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                                 quantile_levels=[0.1, 0.5, 0.9]
                             )
                         
-                        # Convert predictions to numpy and denormalize
+                        # Convert predictions to numpy and denormalize using original scaler
                         next_mean = next_mean.detach().cpu().numpy()
                         next_quantiles = next_quantiles.detach().cpu().numpy()
                         
-                        # Denormalize predictions
-                        next_mean_pred = scaler.inverse_transform(next_mean.reshape(-1, 1)).flatten()
-                        next_lower = scaler.inverse_transform(next_quantiles[0, :, 0].reshape(-1, 1)).flatten()
-                        next_upper = scaler.inverse_transform(next_quantiles[0, :, 2].reshape(-1, 1)).flatten()
+                        # Denormalize predictions using the original scaler
+                        next_mean_pred = original_scaler.inverse_transform(next_mean.reshape(-1, 1)).flatten()
+                        next_lower = original_scaler.inverse_transform(next_quantiles[0, :, 0].reshape(-1, 1)).flatten()
+                        next_upper = original_scaler.inverse_transform(next_quantiles[0, :, 2].reshape(-1, 1)).flatten()
                         
                         # Calculate standard deviation
                         next_std_pred = (next_upper - next_lower) / (2 * 1.645)
+                        
+                        # Check for discontinuity and apply continuity correction
                         if abs(next_mean_pred[0] - extended_mean_pred[-1]) > max(1e-6, 0.05 * abs(extended_mean_pred[-1])):
                             print(f"Warning: Discontinuity detected between last prediction ({extended_mean_pred[-1]}) and next prediction ({next_mean_pred[0]})")
-                    
+                            # Apply continuity correction to first prediction
+                            next_mean_pred[0] = extended_mean_pred[-1]
+                            # Adjust subsequent predictions to maintain trend
+                            if len(next_mean_pred) > 1:
+                                original_trend = next_mean_pred[1] - next_mean_pred[0]
+                                for i in range(1, len(next_mean_pred)):
+                                    next_mean_pred[i] = extended_mean_pred[-1] + original_trend * i
+                        
+                        # Apply financial smoothing if enabled
+                        if use_smoothing and len(next_mean_pred) > 1:
+                            next_mean_pred = apply_financial_smoothing(next_mean_pred, smoothing_type, smoothing_window, smoothing_alpha, 3, use_smoothing)
+                        
                         # Append predictions
                         extended_mean_pred = np.concatenate([extended_mean_pred, next_mean_pred])
                         extended_std_pred = np.concatenate([extended_std_pred, next_std_pred])
@@ -734,20 +759,19 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                 try:
                     # Prepare volume data for Chronos
                     volume_data = df['Volume'].values
-                    if len(volume_data) >= 64:
+                    if len(volume_data) >= chronos_context_size:
                         # Normalize volume data
-                        window_size = 64
-                        scaler_range = min(len(volume_data), window_size * 2)
-                        context_window = volume_data[-window_size:]
+                        scaler_range = min(len(volume_data), chronos_context_size * 2)
+                        context_window = volume_data[-chronos_context_size:]
                         volume_scaler = MinMaxScaler(feature_range=(-1, 1))
                         # Fit scaler on a larger range for better normalization
                         volume_scaler.fit(volume_data[-scaler_range:].reshape(-1, 1))
                         normalized_volume = volume_scaler.transform(context_window.reshape(-1, 1)).flatten()
-                        if len(normalized_volume) < window_size:
-                            padding = np.full(window_size - len(normalized_volume), normalized_volume[-1])
+                        if len(normalized_volume) < chronos_context_size:
+                            padding = np.full(chronos_context_size - len(normalized_volume), normalized_volume[-1])
                             normalized_volume = np.concatenate([padding, normalized_volume])
-                        elif len(normalized_volume) > window_size:
-                            normalized_volume = normalized_volume[-window_size:]
+                        elif len(normalized_volume) > chronos_context_size:
+                            normalized_volume = normalized_volume[-chronos_context_size:]
                         volume_context = torch.tensor(normalized_volume, dtype=dtype, device=device)
                         if len(volume_context.shape) == 1:
                             volume_context = volume_context.unsqueeze(0)
@@ -765,7 +789,7 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                         std_pred_vol = (upper_bound - lower_bound) / (2 * 1.645)
                         last_actual = volume_data[-1]
                         first_pred = volume_pred[0]
-                        if abs(first_pred - last_actual) > max(1e-6, 0.005 * abs(last_actual)):  # Further reduced threshold
+                        if abs(first_pred - last_actual) > max(1e-6, 0.005 * abs(last_actual)):
                             print(f"Warning: Discontinuity detected between last actual volume ({last_actual}) and first prediction ({first_pred})")
                             # Apply continuity correction
                             volume_pred[0] = last_actual
@@ -776,33 +800,38 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                                 # Apply the same trend but starting from the last actual value
                                 for i in range(1, len(volume_pred)):
                                     volume_pred[i] = last_actual + original_trend * i
-                                    # Add smoothing to prevent drift if enabled
-                                    if use_smoothing and i > 1:
-                                        smoothing_factor = 0.95
-                                        volume_pred[i] = smoothing_factor * volume_pred[i] + (1 - smoothing_factor) * volume_pred[i-1]
+                                
+                                # Apply financial smoothing if enabled
+                                if use_smoothing:
+                                    volume_pred = apply_financial_smoothing(volume_pred, smoothing_type, smoothing_window, smoothing_alpha, 3, use_smoothing)
+                        
                         # Extend volume predictions if needed
                         if actual_prediction_length < trim_length:
-                            extended_mean_pred = volume_pred.copy()
-                            extended_std_pred = std_pred_vol.copy()
+                            extended_volume_pred = volume_pred.copy()
+                            extended_volume_std = std_pred_vol.copy()
                             remaining_steps = trim_length - actual_prediction_length
                             steps_needed = (remaining_steps + actual_prediction_length - 1) // actual_prediction_length
+                            
                             for step in range(steps_needed):
-                                # Use all available datapoints for context, prioritizing actual data over predictions
-                                all_available_data = np.concatenate([volume_data, extended_mean_pred])
+                                # Use all available datapoints for context, including predictions
+                                # This allows the model to build upon its own predictions for better long-horizon forecasting
+                                all_available_data = np.concatenate([volume_data, extended_volume_pred])
                                 
-                                # If we have more data than window_size, use the most recent window_size points
+                                # If we have more data than chronos_context_size, use the most recent chronos_context_size points
                                 # Otherwise, use all available data (this allows for longer context when available)
-                                if len(all_available_data) > window_size:
-                                    context_window = all_available_data[-window_size:]
+                                if len(all_available_data) > chronos_context_size:
+                                    context_window = all_available_data[-chronos_context_size:]
                                 else:
                                     context_window = all_available_data
                                 
-                                volume_scaler = MinMaxScaler(feature_range=(-1, 1))
-                                normalized_context = volume_scaler.fit_transform(context_window.reshape(-1, 1)).flatten()
+                                # Use the original volume scaler to maintain consistency - fit on historical data only
+                                # but transform the combined context window
+                                normalized_context = volume_scaler.transform(context_window.reshape(-1, 1)).flatten()
                                 context = torch.tensor(normalized_context, dtype=dtype, device=device)
                                 if len(context.shape) == 1:
                                     context = context.unsqueeze(0)
-                                next_length = min(window_size, remaining_steps)
+                                
+                                next_length = min(chronos_context_size, remaining_steps)
                                 with torch.amp.autocast('cuda'):
                                     next_quantiles, next_mean = pipe.predict_quantiles(
                                         context=context,
@@ -815,14 +844,26 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                                 next_lower = volume_scaler.inverse_transform(next_quantiles[0, :, 0].reshape(-1, 1)).flatten()
                                 next_upper = volume_scaler.inverse_transform(next_quantiles[0, :, 2].reshape(-1, 1)).flatten()
                                 next_std_pred = (next_upper - next_lower) / (2 * 1.645)
-                                if abs(next_mean_pred[0] - extended_mean_pred[-1]) > max(1e-6, 0.05 * abs(extended_mean_pred[-1])):
-                                    print(f"Warning: Discontinuity detected between last volume prediction ({extended_mean_pred[-1]}) and next prediction ({next_mean_pred[0]})")
-                                extended_mean_pred = np.concatenate([extended_mean_pred, next_mean_pred])
-                                extended_std_pred = np.concatenate([extended_std_pred, next_std_pred])
+                                
+                                # Check for discontinuity and apply continuity correction
+                                if abs(next_mean_pred[0] - extended_volume_pred[-1]) > max(1e-6, 0.05 * abs(extended_volume_pred[-1])):
+                                    print(f"Warning: Discontinuity detected between last volume prediction ({extended_volume_pred[-1]}) and next prediction ({next_mean_pred[0]})")
+                                    next_mean_pred[0] = extended_volume_pred[-1]
+                                    if len(next_mean_pred) > 1:
+                                        original_trend = next_mean_pred[1] - next_mean_pred[0]
+                                        for i in range(1, len(next_mean_pred)):
+                                            next_mean_pred[i] = extended_volume_pred[-1] + original_trend * i
+                                
+                                # Apply financial smoothing if enabled
+                                if use_smoothing and len(next_mean_pred) > 1:
+                                    next_mean_pred = apply_financial_smoothing(next_mean_pred, smoothing_type, smoothing_window, smoothing_alpha, 3, use_smoothing)
+                                
+                                extended_volume_pred = np.concatenate([extended_volume_pred, next_mean_pred])
+                                extended_volume_std = np.concatenate([extended_volume_std, next_std_pred])
                                 remaining_steps -= len(next_mean_pred)
                                 if remaining_steps <= 0:
                                     break
-                            volume_pred = extended_mean_pred[:trim_length]
+                            volume_pred = extended_volume_pred[:trim_length]
                     else:
                         avg_volume = df['Volume'].mean()
                         volume_pred = np.full(trim_length, avg_volume)
@@ -831,23 +872,23 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                     # Fallback: use historical average
                     avg_volume = df['Volume'].mean()
                     volume_pred = np.full(trim_length, avg_volume)
+                
                 try:
                     # Prepare RSI data for Chronos
                     rsi_data = df['RSI'].values
-                    if len(rsi_data) >= 64 and not np.any(np.isnan(rsi_data)):
+                    if len(rsi_data) >= chronos_context_size and not np.any(np.isnan(rsi_data)):
                         # RSI is already normalized (0-100), but we'll scale it to (-1, 1)
-                        window_size = 64
-                        scaler_range = min(len(rsi_data), window_size * 2)
-                        context_window = rsi_data[-window_size:]
+                        scaler_range = min(len(rsi_data), chronos_context_size * 2)
+                        context_window = rsi_data[-chronos_context_size:]
                         rsi_scaler = MinMaxScaler(feature_range=(-1, 1))
                         # Fit scaler on a larger range for better normalization
                         rsi_scaler.fit(rsi_data[-scaler_range:].reshape(-1, 1))
                         normalized_rsi = rsi_scaler.transform(context_window.reshape(-1, 1)).flatten()
-                        if len(normalized_rsi) < window_size:
-                            padding = np.full(window_size - len(normalized_rsi), normalized_rsi[-1])
+                        if len(normalized_rsi) < chronos_context_size:
+                            padding = np.full(chronos_context_size - len(normalized_rsi), normalized_rsi[-1])
                             normalized_rsi = np.concatenate([padding, normalized_rsi])
-                        elif len(normalized_rsi) > window_size:
-                            normalized_rsi = normalized_rsi[-window_size:]
+                        elif len(normalized_rsi) > chronos_context_size:
+                            normalized_rsi = normalized_rsi[-chronos_context_size:]
                         rsi_context = torch.tensor(normalized_rsi, dtype=dtype, device=device)
                         if len(rsi_context.shape) == 1:
                             rsi_context = rsi_context.unsqueeze(0)
@@ -868,7 +909,7 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                         rsi_pred = np.clip(rsi_pred, 0, 100)
                         last_actual = rsi_data[-1]
                         first_pred = rsi_pred[0]
-                        if abs(first_pred - last_actual) > max(1e-6, 0.005 * abs(last_actual)):  # Further reduced threshold
+                        if abs(first_pred - last_actual) > max(1e-6, 0.005 * abs(last_actual)):
                             print(f"Warning: Discontinuity detected between last actual RSI ({last_actual}) and first prediction ({first_pred})")
                             # Apply continuity correction
                             rsi_pred[0] = last_actual
@@ -876,29 +917,34 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                                 trend = rsi_pred[1] - first_pred
                                 rsi_pred[1:] = rsi_pred[1:] - first_pred + last_actual
                                 rsi_pred = np.clip(rsi_pred, 0, 100)  # Re-clip after adjustment
+                        
                         # Extend RSI predictions if needed
                         if actual_prediction_length < trim_length:
-                            extended_mean_pred = rsi_pred.copy()
-                            extended_std_pred = std_pred_rsi.copy()
+                            extended_rsi_pred = rsi_pred.copy()
+                            extended_rsi_std = std_pred_rsi.copy()
                             remaining_steps = trim_length - actual_prediction_length
                             steps_needed = (remaining_steps + actual_prediction_length - 1) // actual_prediction_length
+                            
                             for step in range(steps_needed):
-                                # Use all available datapoints for context, prioritizing actual data over predictions
-                                all_available_data = np.concatenate([rsi_data, extended_mean_pred])
+                                # Use all available datapoints for context, including predictions
+                                # This allows the model to build upon its own predictions for better long-horizon forecasting
+                                all_available_data = np.concatenate([rsi_data, extended_rsi_pred])
                                 
-                                # If we have more data than window_size, use the most recent window_size points
+                                # If we have more data than chronos_context_size, use the most recent chronos_context_size points
                                 # Otherwise, use all available data (this allows for longer context when available)
-                                if len(all_available_data) > window_size:
-                                    context_window = all_available_data[-window_size:]
+                                if len(all_available_data) > chronos_context_size:
+                                    context_window = all_available_data[-chronos_context_size:]
                                 else:
                                     context_window = all_available_data
                                 
-                                rsi_scaler = MinMaxScaler(feature_range=(-1, 1))
-                                normalized_context = rsi_scaler.fit_transform(context_window.reshape(-1, 1)).flatten()
+                                # Use the original RSI scaler to maintain consistency - fit on historical data only
+                                # but transform the combined context window
+                                normalized_context = rsi_scaler.transform(context_window.reshape(-1, 1)).flatten()
                                 context = torch.tensor(normalized_context, dtype=dtype, device=device)
                                 if len(context.shape) == 1:
                                     context = context.unsqueeze(0)
-                                next_length = min(window_size, remaining_steps)
+                                
+                                next_length = min(chronos_context_size, remaining_steps)
                                 with torch.amp.autocast('cuda'):
                                     next_quantiles, next_mean = pipe.predict_quantiles(
                                         context=context,
@@ -912,14 +958,28 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                                 next_upper = rsi_scaler.inverse_transform(next_quantiles[0, :, 2].reshape(-1, 1)).flatten()
                                 next_std_pred = (next_upper - next_lower) / (2 * 1.645)
                                 next_mean_pred = np.clip(next_mean_pred, 0, 100)
-                                if abs(next_mean_pred[0] - extended_mean_pred[-1]) > max(1e-6, 0.005 * abs(extended_mean_pred[-1])):
-                                    print(f"Warning: Discontinuity detected between last RSI prediction ({extended_mean_pred[-1]}) and next prediction ({next_mean_pred[0]})")
-                                extended_mean_pred = np.concatenate([extended_mean_pred, next_mean_pred])
-                                extended_std_pred = np.concatenate([extended_std_pred, next_std_pred])
+                                
+                                # Check for discontinuity and apply continuity correction
+                                if abs(next_mean_pred[0] - extended_rsi_pred[-1]) > max(1e-6, 0.005 * abs(extended_rsi_pred[-1])):
+                                    print(f"Warning: Discontinuity detected between last RSI prediction ({extended_rsi_pred[-1]}) and next prediction ({next_mean_pred[0]})")
+                                    next_mean_pred[0] = extended_rsi_pred[-1]
+                                    if len(next_mean_pred) > 1:
+                                        original_trend = next_mean_pred[1] - next_mean_pred[0]
+                                        for i in range(1, len(next_mean_pred)):
+                                            next_mean_pred[i] = extended_rsi_pred[-1] + original_trend * i
+                                        next_mean_pred = np.clip(next_mean_pred, 0, 100)
+                                
+                                # Apply financial smoothing if enabled
+                                if use_smoothing and len(next_mean_pred) > 1:
+                                    next_mean_pred = apply_financial_smoothing(next_mean_pred, smoothing_type, smoothing_window, smoothing_alpha, 3, use_smoothing)
+                                    next_mean_pred = np.clip(next_mean_pred, 0, 100)
+                                
+                                extended_rsi_pred = np.concatenate([extended_rsi_pred, next_mean_pred])
+                                extended_rsi_std = np.concatenate([extended_rsi_std, next_std_pred])
                                 remaining_steps -= len(next_mean_pred)
                                 if remaining_steps <= 0:
                                     break
-                            rsi_pred = extended_mean_pred[:trim_length]
+                            rsi_pred = extended_rsi_pred[:trim_length]
                     else:
                         last_rsi = df['RSI'].iloc[-1]
                         rsi_pred = np.full(trim_length, last_rsi)
@@ -928,23 +988,23 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                     # Fallback: use last known RSI value
                     last_rsi = df['RSI'].iloc[-1]
                     rsi_pred = np.full(trim_length, last_rsi)
+                
                 try:
                     # Prepare MACD data for Chronos
                     macd_data = df['MACD'].values
-                    if len(macd_data) >= 64 and not np.any(np.isnan(macd_data)):
+                    if len(macd_data) >= chronos_context_size and not np.any(np.isnan(macd_data)):
                         # Normalize MACD data
-                        window_size = 64
-                        scaler_range = min(len(macd_data), window_size * 2)
-                        context_window = macd_data[-window_size:]
+                        scaler_range = min(len(macd_data), chronos_context_size * 2)
+                        context_window = macd_data[-chronos_context_size:]
                         macd_scaler = MinMaxScaler(feature_range=(-1, 1))
                         # Fit scaler on a larger range for better normalization
                         macd_scaler.fit(macd_data[-scaler_range:].reshape(-1, 1))
                         normalized_macd = macd_scaler.transform(context_window.reshape(-1, 1)).flatten()
-                        if len(normalized_macd) < window_size:
-                            padding = np.full(window_size - len(normalized_macd), normalized_macd[-1])
+                        if len(normalized_macd) < chronos_context_size:
+                            padding = np.full(chronos_context_size - len(normalized_macd), normalized_macd[-1])
                             normalized_macd = np.concatenate([padding, normalized_macd])
-                        elif len(normalized_macd) > window_size:
-                            normalized_macd = normalized_macd[-window_size:]
+                        elif len(normalized_macd) > chronos_context_size:
+                            normalized_macd = normalized_macd[-chronos_context_size:]
                         macd_context = torch.tensor(normalized_macd, dtype=dtype, device=device)
                         if len(macd_context.shape) == 1:
                             macd_context = macd_context.unsqueeze(0)
@@ -964,8 +1024,8 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                         last_actual = macd_data[-1]
                         first_pred = macd_pred[0]
 
-                        # Extend MACD predictions if needed
-                        if abs(first_pred - last_actual) > max(1e-6, 0.005 * abs(last_actual)):  # Further reduced threshold
+                        # Check for discontinuity and apply continuity correction
+                        if abs(first_pred - last_actual) > max(1e-6, 0.005 * abs(last_actual)):
                             print(f"Warning: Discontinuity detected between last actual MACD ({last_actual}) and first prediction ({first_pred})")
                             # Apply continuity correction
                             macd_pred[0] = last_actual
@@ -976,32 +1036,38 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                                 # Apply the same trend but starting from the last actual value
                                 for i in range(1, len(macd_pred)):
                                     macd_pred[i] = last_actual + original_trend * i
-                                    # Add smoothing to prevent drift if enabled
-                                    if use_smoothing and i > 1:
-                                        smoothing_factor = 0.95
-                                        macd_pred[i] = smoothing_factor * macd_pred[i] + (1 - smoothing_factor) * macd_pred[i-1]
+                                
+                                # Apply financial smoothing if enabled
+                                if use_smoothing:
+                                    macd_pred = apply_financial_smoothing(macd_pred, smoothing_type, smoothing_window, smoothing_alpha, 3, use_smoothing)
+                        
+                        # Extend MACD predictions if needed
                         if actual_prediction_length < trim_length:
-                            extended_mean_pred = macd_pred.copy()
-                            extended_std_pred = std_pred_macd.copy()
+                            extended_macd_pred = macd_pred.copy()
+                            extended_macd_std = std_pred_macd.copy()
                             remaining_steps = trim_length - actual_prediction_length
                             steps_needed = (remaining_steps + actual_prediction_length - 1) // actual_prediction_length
+                            
                             for step in range(steps_needed):
-                                # Use all available datapoints for context, prioritizing actual data over predictions
-                                all_available_data = np.concatenate([macd_data, extended_mean_pred])
+                                # Use all available datapoints for context, including predictions
+                                # This allows the model to build upon its own predictions for better long-horizon forecasting
+                                all_available_data = np.concatenate([macd_data, extended_macd_pred])
                                 
-                                # If we have more data than window_size, use the most recent window_size points
+                                # If we have more data than chronos_context_size, use the most recent chronos_context_size points
                                 # Otherwise, use all available data (this allows for longer context when available)
-                                if len(all_available_data) > window_size:
-                                    context_window = all_available_data[-window_size:]
+                                if len(all_available_data) > chronos_context_size:
+                                    context_window = all_available_data[-chronos_context_size:]
                                 else:
                                     context_window = all_available_data
                                 
-                                macd_scaler = MinMaxScaler(feature_range=(-1, 1))
-                                normalized_context = macd_scaler.fit_transform(context_window.reshape(-1, 1)).flatten()
+                                # Use the original MACD scaler to maintain consistency - fit on historical data only
+                                # but transform the combined context window
+                                normalized_context = macd_scaler.transform(context_window.reshape(-1, 1)).flatten()
                                 context = torch.tensor(normalized_context, dtype=dtype, device=device)
                                 if len(context.shape) == 1:
                                     context = context.unsqueeze(0)
-                                next_length = min(window_size, remaining_steps)
+                                
+                                next_length = min(chronos_context_size, remaining_steps)
                                 with torch.amp.autocast('cuda'):
                                     next_quantiles, next_mean = pipe.predict_quantiles(
                                         context=context,
@@ -1014,14 +1080,26 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                                 next_lower = macd_scaler.inverse_transform(next_quantiles[0, :, 0].reshape(-1, 1)).flatten()
                                 next_upper = macd_scaler.inverse_transform(next_quantiles[0, :, 2].reshape(-1, 1)).flatten()
                                 next_std_pred = (next_upper - next_lower) / (2 * 1.645)
-                                if abs(next_mean_pred[0] - extended_mean_pred[-1]) > max(1e-6, 0.05 * abs(extended_mean_pred[-1])):
-                                    print(f"Warning: Discontinuity detected between last MACD prediction ({extended_mean_pred[-1]}) and next prediction ({next_mean_pred[0]})")
-                                extended_mean_pred = np.concatenate([extended_mean_pred, next_mean_pred])
-                                extended_std_pred = np.concatenate([extended_std_pred, next_std_pred])
+                                
+                                # Check for discontinuity and apply continuity correction
+                                if abs(next_mean_pred[0] - extended_macd_pred[-1]) > max(1e-6, 0.05 * abs(extended_macd_pred[-1])):
+                                    print(f"Warning: Discontinuity detected between last MACD prediction ({extended_macd_pred[-1]}) and next prediction ({next_mean_pred[0]})")
+                                    next_mean_pred[0] = extended_macd_pred[-1]
+                                    if len(next_mean_pred) > 1:
+                                        original_trend = next_mean_pred[1] - next_mean_pred[0]
+                                        for i in range(1, len(next_mean_pred)):
+                                            next_mean_pred[i] = extended_macd_pred[-1] + original_trend * i
+                                
+                                # Apply financial smoothing if enabled
+                                if use_smoothing and len(next_mean_pred) > 1:
+                                    next_mean_pred = apply_financial_smoothing(next_mean_pred, smoothing_type, smoothing_window, smoothing_alpha, 3, use_smoothing)
+                                
+                                extended_macd_pred = np.concatenate([extended_macd_pred, next_mean_pred])
+                                extended_macd_std = np.concatenate([extended_macd_std, next_std_pred])
                                 remaining_steps -= len(next_mean_pred)
                                 if remaining_steps <= 0:
                                     break
-                            macd_pred = extended_mean_pred[:trim_length]
+                            macd_pred = extended_macd_pred[:trim_length]
                     else:
                         last_macd = df['MACD'].iloc[-1]
                         macd_pred = np.full(trim_length, last_macd)
@@ -1913,6 +1991,198 @@ def advanced_trading_signals(df: pd.DataFrame, regime_info: Dict = None) -> Dict
         print(f"Advanced trading signals error: {str(e)}")
         return {"error": str(e)}
 
+def apply_financial_smoothing(data: np.ndarray, smoothing_type: str = "exponential", 
+                            window_size: int = 5, alpha: float = 0.3, 
+                            poly_order: int = 3, use_smoothing: bool = True) -> np.ndarray:
+    """
+    Apply financial smoothing algorithms to time series data.
+    
+    Args:
+        data (np.ndarray): Input time series data
+        smoothing_type (str): Type of smoothing to apply
+            - 'exponential': Exponential moving average (good for trend following)
+            - 'moving_average': Simple moving average (good for noise reduction)
+            - 'kalman': Kalman filter (good for adaptive smoothing)
+            - 'savitzky_golay': Savitzky-Golay filter (good for preserving peaks/valleys)
+            - 'double_exponential': Double exponential smoothing (good for trend + seasonality)
+            - 'triple_exponential': Triple exponential smoothing (Holt-Winters, good for complex patterns)
+            - 'adaptive': Adaptive smoothing based on volatility
+            - 'none': No smoothing applied
+        window_size (int): Window size for moving average and Savitzky-Golay
+        alpha (float): Smoothing factor for exponential methods (0-1)
+        poly_order (int): Polynomial order for Savitzky-Golay filter
+        use_smoothing (bool): Whether to apply smoothing
+    
+    Returns:
+        np.ndarray: Smoothed data
+    """
+    if not use_smoothing or smoothing_type == "none" or len(data) < 3:
+        return data
+    
+    try:
+        if smoothing_type == "exponential":
+            # Exponential Moving Average - good for trend following
+            smoothed = np.zeros_like(data)
+            smoothed[0] = data[0]
+            for i in range(1, len(data)):
+                smoothed[i] = alpha * data[i] + (1 - alpha) * smoothed[i-1]
+            return smoothed
+        
+        elif smoothing_type == "moving_average":
+            # Simple Moving Average - good for noise reduction
+            if len(data) < window_size:
+                return data
+            
+            smoothed = np.zeros_like(data)
+            # Handle the beginning of the series
+            for i in range(min(window_size - 1, len(data))):
+                smoothed[i] = np.mean(data[:i+1])
+            
+            # Apply moving average for the rest
+            for i in range(window_size - 1, len(data)):
+                smoothed[i] = np.mean(data[i-window_size+1:i+1])
+            return smoothed
+        
+        elif smoothing_type == "kalman":
+            # Kalman Filter - adaptive smoothing
+            if len(data) < 2:
+                return data
+            
+            # Initialize Kalman filter parameters
+            Q = 0.01  # Process noise
+            R = 0.1   # Measurement noise
+            P = 1.0   # Initial estimate error
+            x = data[0]  # Initial state estimate
+            
+            smoothed = np.zeros_like(data)
+            smoothed[0] = x
+            
+            for i in range(1, len(data)):
+                # Prediction step
+                x_pred = x
+                P_pred = P + Q
+                
+                # Update step
+                K = P_pred / (P_pred + R)  # Kalman gain
+                x = x_pred + K * (data[i] - x_pred)
+                P = (1 - K) * P_pred
+                
+                smoothed[i] = x
+            
+            return smoothed
+        
+        elif smoothing_type == "savitzky_golay":
+            # Savitzky-Golay filter - preserves peaks and valleys
+            if len(data) < window_size:
+                return data
+            
+            # Ensure window_size is odd
+            if window_size % 2 == 0:
+                window_size += 1
+            
+            # Ensure polynomial order is less than window_size
+            if poly_order >= window_size:
+                poly_order = window_size - 1
+            
+            try:
+                from scipy.signal import savgol_filter
+                return savgol_filter(data, window_size, poly_order)
+            except ImportError:
+                # Fallback to simple moving average if scipy not available
+                return apply_financial_smoothing(data, "moving_average", window_size)
+        
+        elif smoothing_type == "double_exponential":
+            # Double Exponential Smoothing (Holt's method) - trend + level
+            if len(data) < 3:
+                return data
+            
+            smoothed = np.zeros_like(data)
+            trend = np.zeros_like(data)
+            
+            # Initialize
+            smoothed[0] = data[0]
+            trend[0] = data[1] - data[0] if len(data) > 1 else 0
+            
+            # Apply double exponential smoothing
+            for i in range(1, len(data)):
+                prev_smoothed = smoothed[i-1]
+                prev_trend = trend[i-1]
+                
+                smoothed[i] = alpha * data[i] + (1 - alpha) * (prev_smoothed + prev_trend)
+                trend[i] = alpha * (smoothed[i] - prev_smoothed) + (1 - alpha) * prev_trend
+            
+            return smoothed
+        
+        elif smoothing_type == "triple_exponential":
+            # Triple Exponential Smoothing (Holt-Winters) - trend + level + seasonality
+            if len(data) < 6:
+                return apply_financial_smoothing(data, "double_exponential", window_size, alpha)
+            
+            # For simplicity, we'll use a seasonal period of 5 (common for financial data)
+            season_period = min(5, len(data) // 2)
+            
+            smoothed = np.zeros_like(data)
+            trend = np.zeros_like(data)
+            season = np.zeros_like(data)
+            
+            # Initialize
+            smoothed[0] = data[0]
+            trend[0] = (data[season_period] - data[0]) / season_period if len(data) > season_period else 0
+            
+            # Initialize seasonal components
+            for i in range(season_period):
+                season[i] = data[i] - smoothed[0]
+            
+            # Apply triple exponential smoothing
+            for i in range(1, len(data)):
+                prev_smoothed = smoothed[i-1]
+                prev_trend = trend[i-1]
+                prev_season = season[(i-1) % season_period]
+                
+                smoothed[i] = alpha * (data[i] - prev_season) + (1 - alpha) * (prev_smoothed + prev_trend)
+                trend[i] = alpha * (smoothed[i] - prev_smoothed) + (1 - alpha) * prev_trend
+                season[i % season_period] = alpha * (data[i] - smoothed[i]) + (1 - alpha) * prev_season
+            
+            return smoothed
+        
+        elif smoothing_type == "adaptive":
+            # Adaptive smoothing based on volatility
+            if len(data) < 5:
+                return data
+            
+            # Calculate rolling volatility
+            returns = np.diff(data) / data[:-1]
+            volatility = np.zeros_like(data)
+            volatility[0] = np.std(returns) if len(returns) > 0 else 0.01
+            
+            for i in range(1, len(data)):
+                if i < 5:
+                    volatility[i] = np.std(returns[:i]) if i > 0 else 0.01
+                else:
+                    volatility[i] = np.std(returns[i-5:i])
+            
+            # Normalize volatility to smoothing factor
+            vol_factor = np.clip(volatility / np.mean(volatility), 0.1, 0.9)
+            adaptive_alpha = 1 - vol_factor  # Higher volatility = less smoothing
+            
+            # Apply adaptive exponential smoothing
+            smoothed = np.zeros_like(data)
+            smoothed[0] = data[0]
+            
+            for i in range(1, len(data)):
+                current_alpha = adaptive_alpha[i]
+                smoothed[i] = current_alpha * data[i] + (1 - current_alpha) * smoothed[i-1]
+            
+            return smoothed
+        
+        else:
+            # Default to exponential smoothing
+            return apply_financial_smoothing(data, "exponential", window_size, alpha)
+    
+    except Exception as e:
+        print(f"Smoothing error: {str(e)}")
+        return data
+
 def create_interface():
     """Create the Gradio interface with separate tabs for different timeframes"""
     with gr.Blocks(title="Advanced Stock Prediction Analysis") as demo:
@@ -1935,6 +2205,37 @@ def create_interface():
                     use_regime_detection = gr.Checkbox(label="Use Regime Detection", value=True)
                     use_stress_testing = gr.Checkbox(label="Use Stress Testing", value=True)
                     use_smoothing = gr.Checkbox(label="Use Smoothing", value=True)
+                    smoothing_type = gr.Dropdown(
+                        choices=["exponential", "moving_average", "kalman", "savitzky_golay", 
+                                "double_exponential", "triple_exponential", "adaptive", "none"],
+                        label="Smoothing Type",
+                        value="exponential",
+                        info="""Smoothing algorithms:
+                        • Exponential: Trend following (default)
+                        • Moving Average: Noise reduction
+                        • Kalman: Adaptive smoothing
+                        • Savitzky-Golay: Preserves peaks/valleys
+                        • Double Exponential: Trend + level
+                        • Triple Exponential: Complex patterns
+                        • Adaptive: Volatility-based
+                        • None: No smoothing"""
+                    )
+                    smoothing_window = gr.Slider(
+                        minimum=3,
+                        maximum=21,
+                        value=5,
+                        step=1,
+                        label="Smoothing Window Size",
+                        info="Window size for moving average and Savitzky-Golay filters"
+                    )
+                    smoothing_alpha = gr.Slider(
+                        minimum=0.1,
+                        maximum=0.9,
+                        value=0.3,
+                        step=0.05,
+                        label="Smoothing Alpha",
+                        info="Smoothing factor for exponential methods (0.1-0.9)"
+                    )
                     risk_free_rate = gr.Slider(
                         minimum=0.0,
                         maximum=0.1,
@@ -2005,6 +2306,22 @@ def create_interface():
                             value="chronos"
                         )
                         daily_predict_btn = gr.Button("Analyze Stock")
+                        gr.Markdown("""
+                        **Daily Analysis Features:**
+                        - **Extended Data Range**: Up to 10 years of historical data (3650 days)
+                        - **24/7 Availability**: Available regardless of market hours
+                        - **Auto-Adjusted Data**: Automatically adjusted for splits and dividends
+                        - **Comprehensive Financial Ratios**: P/E, PEG, Price-to-Book, Price-to-Sales, and more
+                        - **Advanced Risk Metrics**: Sharpe ratio, VaR, drawdown analysis, market correlation
+                        - **Market Regime Detection**: Identifies bull/bear/sideways market conditions
+                        - **Stress Testing**: Scenario analysis under various market conditions
+                        - **Ensemble Methods**: Combines multiple prediction models for improved accuracy
+                        - **Maximum prediction period**: 365 days
+                        - **Ideal for**: Medium to long-term investment analysis, portfolio management, and strategic planning
+                        - **Technical Indicators**: RSI, MACD, Bollinger Bands, moving averages optimized for daily data
+                        - **Volume Analysis**: Average daily volume, volume volatility, and liquidity metrics
+                        - **Sector Analysis**: Industry classification, market cap ranking, and sector-specific metrics
+                        """)
                     
                     with gr.Column():
                         daily_plot = gr.Plot(label="Analysis and Prediction")
@@ -2168,7 +2485,7 @@ def create_interface():
         def analyze_stock(symbol, timeframe, prediction_days, lookback_days, strategy,
                          use_ensemble, use_regime_detection, use_stress_testing,
                          risk_free_rate, market_index, chronos_weight, technical_weight, statistical_weight,
-                         random_real_points, use_smoothing):
+                         random_real_points, use_smoothing, smoothing_type, smoothing_window, smoothing_alpha):
             try:
                 # Create ensemble weights
                 ensemble_weights = {
@@ -2194,7 +2511,10 @@ def create_interface():
                     ensemble_weights=ensemble_weights,
                     market_index=market_index,
                     random_real_points=random_real_points,
-                    use_smoothing=use_smoothing
+                    use_smoothing=use_smoothing,
+                    smoothing_type=smoothing_type,
+                    smoothing_window=smoothing_window,
+                    smoothing_alpha=smoothing_alpha
                 )
                 
                 # Get historical data for additional metrics
@@ -2277,7 +2597,7 @@ def create_interface():
         # Daily analysis button click
         def daily_analysis(s: str, pd: int, ld: int, st: str, ue: bool, urd: bool, ust: bool,
                           rfr: float, mi: str, cw: float, tw: float, sw: float,
-                          rrp: int, usm: bool) -> Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict]:
+                          rrp: int, usm: bool, smt: str, sww: float, sa: float) -> Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict]:
             """
             Process daily timeframe stock analysis with advanced features.
 
@@ -2314,6 +2634,10 @@ def create_interface():
                 rrp (int): Number of random real points to include in long-horizon context
                 usm (bool): Use smoothing
                     When True, applies smoothing to predictions to reduce noise and improve continuity
+                smt (str): Smoothing type to use
+                    Options: "exponential", "moving_average", "kalman", "savitzky_golay", "double_exponential", "triple_exponential", "adaptive", "none"
+                sww (float): Smoothing window size for moving average and Savitzky-Golay
+                sa (float): Smoothing alpha for exponential methods (0.1-0.9)
 
             Returns:
                 Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict]: Analysis results containing:
@@ -2333,7 +2657,7 @@ def create_interface():
 
             Example:
                 >>> signals, plot, metrics, risk, sector, regime, stress, ensemble, advanced = daily_analysis(
-                ...     "AAPL", 30, 365, "chronos", True, True, True, 0.02, "^GSPC", 0.6, 0.2, 0.2, 4, True
+                ...     "AAPL", 30, 365, "chronos", True, True, True, 0.02, "^GSPC", 0.6, 0.2, 0.2, 4, True, "exponential", 5, 0.3
                 ... )
 
             Notes:
@@ -2344,14 +2668,14 @@ def create_interface():
                 - Risk-free rate is typically between 0.02-0.05 (2-5% annually)
                 - Smoothing helps reduce prediction noise but may reduce responsiveness to sudden changes
             """
-            return analyze_stock(s, "1d", pd, ld, st, ue, urd, ust, rfr, mi, cw, tw, sw, rrp, usm)
+            return analyze_stock(s, "1d", pd, ld, st, ue, urd, ust, rfr, mi, cw, tw, sw, rrp, usm, smt, sww, sa)
 
         daily_predict_btn.click(
             fn=daily_analysis,
             inputs=[daily_symbol, daily_prediction_days, daily_lookback_days, daily_strategy,
                    use_ensemble, use_regime_detection, use_stress_testing, risk_free_rate, market_index,
                    chronos_weight, technical_weight, statistical_weight,
-                   random_real_points, use_smoothing],
+                   random_real_points, use_smoothing, smoothing_type, smoothing_window, smoothing_alpha],
             outputs=[daily_signals, daily_plot, daily_metrics, daily_risk_metrics, daily_sector_metrics,
                     daily_regime_metrics, daily_stress_results, daily_ensemble_metrics, daily_signals_advanced]
         )
@@ -2359,7 +2683,7 @@ def create_interface():
         # Hourly analysis button click
         def hourly_analysis(s: str, pd: int, ld: int, st: str, ue: bool, urd: bool, ust: bool,
                            rfr: float, mi: str, cw: float, tw: float, sw: float,
-                           rrp: int, usm: bool) -> Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict]:
+                           rrp: int, usm: bool, smt: str, sww: float, sa: float) -> Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict]:
             """
             Process hourly timeframe stock analysis with advanced features.
 
@@ -2396,6 +2720,10 @@ def create_interface():
                 rrp (int): Number of random real points to include in long-horizon context
                 usm (bool): Use smoothing
                     When True, applies smoothing to predictions to reduce noise and improve continuity
+                smt (str): Smoothing type to use
+                    Options: "exponential", "moving_average", "kalman", "savitzky_golay", "double_exponential", "triple_exponential", "adaptive", "none"
+                sww (float): Smoothing window size for moving average and Savitzky-Golay
+                sa (float): Smoothing alpha for exponential methods (0.1-0.9)
 
             Returns:
                 Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict]: Analysis results containing:
@@ -2415,7 +2743,7 @@ def create_interface():
 
             Example:
                 >>> signals, plot, metrics, risk, sector, regime, stress, ensemble, advanced = hourly_analysis(
-                ...     "AAPL", 3, 14, "chronos", True, True, True, 0.02, "^GSPC", 0.6, 0.2, 0.2, 4, True
+                ...     "AAPL", 3, 14, "chronos", True, True, True, 0.02, "^GSPC", 0.6, 0.2, 0.2, 4, True, "exponential", 5, 0.3
                 ... )
 
             Notes:
@@ -2427,14 +2755,14 @@ def create_interface():
                 - Requires high-liquidity stocks for reliable hourly analysis
                 - Smoothing helps reduce prediction noise but may reduce responsiveness to sudden changes
             """
-            return analyze_stock(s, "1h", pd, ld, st, ue, urd, ust, rfr, mi, cw, tw, sw, rrp, usm)
+            return analyze_stock(s, "1h", pd, ld, st, ue, urd, ust, rfr, mi, cw, tw, sw, rrp, usm, smt, sww, sa)
 
         hourly_predict_btn.click(
             fn=hourly_analysis,
             inputs=[hourly_symbol, hourly_prediction_days, hourly_lookback_days, hourly_strategy,
                    use_ensemble, use_regime_detection, use_stress_testing, risk_free_rate, market_index,
                    chronos_weight, technical_weight, statistical_weight,
-                   random_real_points, use_smoothing],
+                   random_real_points, use_smoothing, smoothing_type, smoothing_window, smoothing_alpha],
             outputs=[hourly_signals, hourly_plot, hourly_metrics, hourly_risk_metrics, hourly_sector_metrics,
                     hourly_regime_metrics, hourly_stress_results, hourly_ensemble_metrics, hourly_signals_advanced]
         )
@@ -2442,7 +2770,7 @@ def create_interface():
         # 15-minute analysis button click
         def min15_analysis(s: str, pd: int, ld: int, st: str, ue: bool, urd: bool, ust: bool,
                           rfr: float, mi: str, cw: float, tw: float, sw: float,
-                          rrp: int, usm: bool) -> Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict]:
+                          rrp: int, usm: bool, smt: str, sww: float, sa: float) -> Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict]:
             """
             Process 15-minute timeframe stock analysis with advanced features.
 
@@ -2479,6 +2807,10 @@ def create_interface():
                 rrp (int): Number of random real points to include in long-horizon context
                 usm (bool): Use smoothing
                     When True, applies smoothing to predictions to reduce noise and improve continuity
+                smt (str): Smoothing type to use
+                    Options: "exponential", "moving_average", "kalman", "savitzky_golay", "double_exponential", "triple_exponential", "adaptive", "none"
+                sww (float): Smoothing window size for moving average and Savitzky-Golay
+                sa (float): Smoothing alpha for exponential methods (0.1-0.9)
 
             Returns:
                 Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict]: Analysis results containing:
@@ -2498,7 +2830,7 @@ def create_interface():
 
             Example:
                 >>> signals, plot, metrics, risk, sector, regime, stress, ensemble, advanced = min15_analysis(
-                ...     "AAPL", 1, 3, "chronos", True, True, True, 0.02, "^GSPC", 0.6, 0.2, 0.2, 4, True
+                ...     "AAPL", 1, 3, "chronos", True, True, True, 0.02, "^GSPC", 0.6, 0.2, 0.2, 4, True, "exponential", 5, 0.3
                 ... )
 
             Notes:
@@ -2512,14 +2844,14 @@ def create_interface():
                 - Best suited for highly liquid large-cap stocks with tight bid-ask spreads
                 - Smoothing helps reduce prediction noise but may reduce responsiveness to sudden changes
             """
-            return analyze_stock(s, "15m", pd, ld, st, ue, urd, ust, rfr, mi, cw, tw, sw, rrp, usm)
+            return analyze_stock(s, "15m", pd, ld, st, ue, urd, ust, rfr, mi, cw, tw, sw, rrp, usm, smt, sww, sa)
 
         min15_predict_btn.click(
             fn=min15_analysis,
             inputs=[min15_symbol, min15_prediction_days, min15_lookback_days, min15_strategy,
                    use_ensemble, use_regime_detection, use_stress_testing, risk_free_rate, market_index,
                    chronos_weight, technical_weight, statistical_weight,
-                   random_real_points, use_smoothing],
+                   random_real_points, use_smoothing, smoothing_type, smoothing_window, smoothing_alpha],
             outputs=[min15_signals, min15_plot, min15_metrics, min15_risk_metrics, min15_sector_metrics,
                     min15_regime_metrics, min15_stress_results, min15_ensemble_metrics, min15_signals_advanced]
         )
