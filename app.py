@@ -3528,11 +3528,17 @@ def get_enhanced_covariate_data(symbol: str, timeframe: str = "1d", lookback_day
                 ))
                 if not data.empty:
                     market_data[index] = data['Close']
+                    print(f"  Successfully collected {index}: {len(data)} data points")
+                else:
+                    print(f"  No data for {index}")
             except Exception as e:
-                print(f"Error fetching {index}: {str(e)}")
+                print(f"  Error fetching {index}: {str(e)}")
         
         if market_data:
             covariate_data['market_indices'] = pd.DataFrame(market_data)
+            print(f"Market indices data shape: {covariate_data['market_indices'].shape}")
+        else:
+            print("No market indices data collected")
         
         # Collect sector data
         print("Collecting sector data...")
@@ -3545,11 +3551,17 @@ def get_enhanced_covariate_data(symbol: str, timeframe: str = "1d", lookback_day
                 ))
                 if not data.empty:
                     sector_data[sector] = data['Close']
+                    print(f"  Successfully collected {sector}: {len(data)} data points")
+                else:
+                    print(f"  No data for {sector}")
             except Exception as e:
-                print(f"Error fetching {sector}: {str(e)}")
+                print(f"  Error fetching {sector}: {str(e)}")
         
         if sector_data:
             covariate_data['sectors'] = pd.DataFrame(sector_data)
+            print(f"Sector data shape: {covariate_data['sectors'].shape}")
+        else:
+            print("No sector data collected")
         
         # Collect economic indicators
         print("Collecting economic indicators...")
@@ -3562,11 +3574,17 @@ def get_enhanced_covariate_data(symbol: str, timeframe: str = "1d", lookback_day
                 ))
                 if not data.empty:
                     economic_data[indicator] = data['Close']
+                    print(f"  Successfully collected {indicator} ({ticker_symbol}): {len(data)} data points")
+                else:
+                    print(f"  No data for {indicator} ({ticker_symbol})")
             except Exception as e:
-                print(f"Error fetching {indicator} ({ticker_symbol}): {str(e)}")
+                print(f"  Error fetching {indicator} ({ticker_symbol}): {str(e)}")
         
         if economic_data:
             covariate_data['economic_indicators'] = pd.DataFrame(economic_data)
+            print(f"Economic indicators data shape: {covariate_data['economic_indicators'].shape}")
+        else:
+            print("No economic indicators data collected")
         
         return covariate_data
     
@@ -3711,12 +3729,13 @@ def create_enhanced_ensemble_model(df: pd.DataFrame, covariate_data: Dict,
         target = df['Close'].values
         
         # Technical indicators as features
-        features.append(df['RSI'].values)
-        features.append(df['MACD'].values)
-        features.append(df['Volatility'].values)
+        features.append(df['RSI'].fillna(50).values)  # Fill NaN with neutral RSI value
+        features.append(df['MACD'].fillna(0).values)  # Fill NaN with zero
+        features.append(df['Volatility'].fillna(df['Volatility'].mean()).values)  # Fill with mean volatility
         
         if 'BB_Upper' in df.columns:
             bb_position = (df['Close'] - df['BB_Lower']) / (df['BB_Upper'] - df['BB_Lower'])
+            bb_position = bb_position.fillna(0.5)  # Fill NaN with neutral position
             features.append(bb_position.values)
         
         # Add covariate data
@@ -3725,32 +3744,44 @@ def create_enhanced_ensemble_model(df: pd.DataFrame, covariate_data: Dict,
                 covariate_series = covariate_data['market_indices'][col]
                 # Align covariate data to target length
                 if len(covariate_series) == len(target):
-                    features.append(covariate_series.values)
+                    # Fill NaN values with forward fill, then backward fill
+                    filled_series = covariate_series.fillna(method='ffill').fillna(method='bfill')
+                    features.append(filled_series.values)
                 elif len(covariate_series) > len(target):
                     # Truncate to target length
-                    features.append(covariate_series.tail(len(target)).values)
+                    truncated_series = covariate_series.tail(len(target))
+                    filled_series = truncated_series.fillna(method='ffill').fillna(method='bfill')
+                    features.append(filled_series.values)
                 else:
                     # Pad with last value
                     padded_values = np.pad(covariate_series.values, 
                                          (len(target) - len(covariate_series), 0), 
                                          mode='edge')
-                    features.append(padded_values)
+                    # Fill any remaining NaN values
+                    filled_values = pd.Series(padded_values).fillna(method='ffill').fillna(method='bfill').values
+                    features.append(filled_values)
         
         if 'economic_indicators' in covariate_data:
             for col in covariate_data['economic_indicators'].columns:
                 covariate_series = covariate_data['economic_indicators'][col]
                 # Align covariate data to target length
                 if len(covariate_series) == len(target):
-                    features.append(covariate_series.values)
+                    # Fill NaN values with forward fill, then backward fill
+                    filled_series = covariate_series.fillna(method='ffill').fillna(method='bfill')
+                    features.append(filled_series.values)
                 elif len(covariate_series) > len(target):
                     # Truncate to target length
-                    features.append(covariate_series.tail(len(target)).values)
+                    truncated_series = covariate_series.tail(len(target))
+                    filled_series = truncated_series.fillna(method='ffill').fillna(method='bfill')
+                    features.append(filled_series.values)
                 else:
                     # Pad with last value
                     padded_values = np.pad(covariate_series.values, 
                                          (len(target) - len(covariate_series), 0), 
                                          mode='edge')
-                    features.append(padded_values)
+                    # Fill any remaining NaN values
+                    filled_values = pd.Series(padded_values).fillna(method='ffill').fillna(method='bfill').values
+                    features.append(filled_values)
         
         # Create feature matrix
         X = np.column_stack(features)
@@ -3770,15 +3801,73 @@ def create_enhanced_ensemble_model(df: pd.DataFrame, covariate_data: Dict,
             print(f"Truncated to minimum length: {min_length}")
         
         # Remove any NaN values
-        mask = ~np.isnan(X).any(axis=1) & ~np.isnan(y)
-        X = X[mask]
-        y = y[mask]
+        print(f"Checking for NaN values in feature matrix...")
+        nan_rows = np.isnan(X).any(axis=1)
+        nan_count = nan_rows.sum()
+        print(f"Found {nan_count} rows with NaN values out of {len(X)} total rows")
+        
+        if nan_count > 0:
+            # Check which features have NaN values
+            for i, feature_name in enumerate(['RSI', 'MACD', 'Volatility', 'BB_Position'] + 
+                                           [f'Market_{j}' for j in range(len(features)-4)]):
+                if i < X.shape[1]:
+                    nan_count_feature = np.isnan(X[:, i]).sum()
+                    if nan_count_feature > 0:
+                        print(f"  Feature {feature_name}: {nan_count_feature} NaN values")
+        
+        # Only remove rows if there are still NaN values after filling
+        if nan_count > 0:
+            mask = ~np.isnan(X).any(axis=1) & ~np.isnan(y)
+            X = X[mask]
+            y = y[mask]
+            print(f"Removed {nan_count} rows with NaN values")
+        else:
+            print("No NaN values found in feature matrix")
         
         print(f"After NaN removal - X shape: {X.shape}, y shape: {y.shape}")
         
         if len(X) < 50:  # Need sufficient data
             print(f"Insufficient data after preprocessing: {len(X)} samples")
-            return np.array([]), np.array([])
+            print("This might be due to:")
+            print("1. Too many NaN values in covariate data")
+            print("2. Insufficient historical data")
+            print("3. Data alignment issues")
+            print("Trying fallback with technical indicators only...")
+            
+            # Fallback: Use only technical indicators
+            try:
+                fallback_features = []
+                fallback_features.append(df['RSI'].fillna(50).values)
+                fallback_features.append(df['MACD'].fillna(0).values)
+                fallback_features.append(df['Volatility'].fillna(df['Volatility'].mean()).values)
+                
+                if 'BB_Upper' in df.columns:
+                    bb_position = (df['Close'] - df['BB_Lower']) / (df['BB_Upper'] - df['BB_Lower'])
+                    bb_position = bb_position.fillna(0.5)
+                    fallback_features.append(bb_position.values)
+                
+                X_fallback = np.column_stack(fallback_features)
+                y_fallback = df['Close'].values
+                
+                # Remove any remaining NaN values
+                mask = ~np.isnan(X_fallback).any(axis=1) & ~np.isnan(y_fallback)
+                X_fallback = X_fallback[mask]
+                y_fallback = y_fallback[mask]
+                
+                print(f"Fallback feature matrix shape: {X_fallback.shape}")
+                
+                if len(X_fallback) >= 50:
+                    print("Using fallback ensemble with technical indicators only")
+                    # Use the fallback data for the rest of the function
+                    X = X_fallback
+                    y = y_fallback
+                else:
+                    print("Fallback also failed, returning empty arrays")
+                    return np.array([]), np.array([])
+                    
+            except Exception as fallback_error:
+                print(f"Fallback failed: {str(fallback_error)}")
+                return np.array([]), np.array([])
         
         # Initialize models
         models = {
