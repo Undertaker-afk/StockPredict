@@ -385,7 +385,7 @@ ECONOMIC_INDICATORS = {
 
 def retry_yfinance_request(func, max_retries=3, initial_delay=1):
     """
-    Retry mechanism for yfinance requests with exponential backoff.
+    Retry mechanism for yfinance requests with exponential backoff up to 8 seconds.
     
     Args:
         func: Function to retry
@@ -399,12 +399,36 @@ def retry_yfinance_request(func, max_retries=3, initial_delay=1):
         try:
             return func()
         except Exception as e:
-            if "401" in str(e) and attempt < max_retries - 1:
-                # Calculate delay with exponential backoff and jitter
-                delay = initial_delay * (2 ** attempt) + random.uniform(0, 1)
-                time.sleep(delay)
-                continue
-            raise e
+            error_str = str(e).lower()
+            
+            # Check if this is the last attempt
+            if attempt == max_retries - 1:
+                print(f"Final attempt failed after {max_retries} retries: {str(e)}")
+                raise e
+            
+            # Determine delay based on error type and attempt number
+            if "401" in error_str or "unauthorized" in error_str:
+                # Authentication errors - longer delay
+                delay = min(8.0, initial_delay * (2 ** attempt) + random.uniform(0, 2))
+                print(f"Authentication error (attempt {attempt + 1}/{max_retries}), retrying in {delay:.2f}s: {str(e)}")
+            elif "429" in error_str or "rate limit" in error_str or "too many requests" in error_str:
+                # Rate limiting - longer delay
+                delay = min(8.0, initial_delay * (2 ** attempt) + random.uniform(1, 3))
+                print(f"Rate limit error (attempt {attempt + 1}/{max_retries}), retrying in {delay:.2f}s: {str(e)}")
+            elif "500" in error_str or "502" in error_str or "503" in error_str or "504" in error_str:
+                # Server errors - moderate delay
+                delay = min(8.0, initial_delay * (2 ** attempt) + random.uniform(0.5, 1.5))
+                print(f"Server error (attempt {attempt + 1}/{max_retries}), retrying in {delay:.2f}s: {str(e)}")
+            elif "timeout" in error_str or "connection" in error_str:
+                # Network errors - shorter delay
+                delay = min(8.0, initial_delay * (2 ** attempt) + random.uniform(0, 1))
+                print(f"Network error (attempt {attempt + 1}/{max_retries}), retrying in {delay:.2f}s: {str(e)}")
+            else:
+                # Generic errors - standard exponential backoff
+                delay = min(8.0, initial_delay * (2 ** attempt) + random.uniform(0, 1))
+                print(f"Generic error (attempt {attempt + 1}/{max_retries}), retrying in {delay:.2f}s: {str(e)}")
+            
+            time.sleep(delay)
 
 def clear_gpu_memory():
     """Clear GPU memory cache"""
@@ -1453,6 +1477,12 @@ def make_prediction_enhanced(symbol: str, timeframe: str = "1d", prediction_days
                     df, mean_pred, covariate_data
                 )
                 
+                # Ensure volume prediction is properly handled
+                if volume_pred is None or len(volume_pred) == 0:
+                    print("Warning: Volume prediction failed, using fallback")
+                    volume_pred = np.full(len(mean_pred), df['Volume'].iloc[-1])
+                    volume_uncertainty = np.full(len(mean_pred), df['Volume'].iloc[-1] * 0.2)
+                
                 # Predict technical indicators
                 print("Predicting technical indicators...")
                 technical_predictions = predict_technical_indicators(df, mean_pred, timeframe)
@@ -1548,6 +1578,12 @@ def make_prediction_enhanced(symbol: str, timeframe: str = "1d", prediction_days
                 volume_pred, volume_uncertainty = calculate_volume_prediction_enhanced(
                     df, final_pred, covariate_data
                 )
+                
+                # Ensure volume prediction is properly handled
+                if volume_pred is None or len(volume_pred) == 0:
+                    print("Warning: Volume prediction failed in technical strategy, using fallback")
+                    volume_pred = np.full(len(final_pred), df['Volume'].iloc[-1])
+                    volume_uncertainty = np.full(len(final_pred), df['Volume'].iloc[-1] * 0.2)
                 
                 # Predict technical indicators
                 print("Predicting technical indicators for technical strategy...")
@@ -1803,6 +1839,38 @@ def make_prediction_enhanced(symbol: str, timeframe: str = "1d", prediction_days
             'market_conditions': market_conditions,
             'covariate_data_available': len(covariate_data) > 0
         }
+        
+        # Add stress testing results if enabled
+        stress_test_results = {}
+        if use_stress_testing:
+            try:
+                print("Performing stress testing...")
+                stress_test_results = stress_test_scenarios(df, final_pred)
+                trading_signals['stress_test_results'] = stress_test_results
+            except Exception as stress_error:
+                print(f"Stress testing failed: {str(stress_error)}")
+                trading_signals['stress_test_results'] = {"error": str(stress_error)}
+        
+        # Add advanced trading signals
+        try:
+            print("Generating advanced trading signals...")
+            advanced_signals = advanced_trading_signals(df, regime_info)
+            trading_signals['advanced_signals'] = advanced_signals
+        except Exception as advanced_error:
+            print(f"Advanced trading signals failed: {str(advanced_error)}")
+            trading_signals['advanced_signals'] = {"error": str(advanced_error)}
+        
+        # Add basic trading signals
+        try:
+            basic_signals = calculate_trading_signals(df)
+            trading_signals.update(basic_signals)
+            trading_signals['symbol'] = symbol
+            trading_signals['timeframe'] = timeframe
+            trading_signals['strategy_used'] = strategy
+            trading_signals['ensemble_used'] = use_ensemble
+        except Exception as basic_error:
+            print(f"Basic trading signals failed: {str(basic_error)}")
+            trading_signals['error'] = str(basic_error)
         
         return trading_signals, fig
         
@@ -3552,6 +3620,7 @@ def get_enhanced_covariate_data(symbol: str, timeframe: str = "1d", lookback_day
                     print(f"  No data for {index}")
             except Exception as e:
                 print(f"  Error fetching {index}: {str(e)}")
+                # Continue with other indices even if one fails
         
         if market_data:
             covariate_data['market_indices'] = pd.DataFrame(market_data)
@@ -3575,6 +3644,7 @@ def get_enhanced_covariate_data(symbol: str, timeframe: str = "1d", lookback_day
                     print(f"  No data for {sector}")
             except Exception as e:
                 print(f"  Error fetching {sector}: {str(e)}")
+                # Continue with other sectors even if one fails
         
         if sector_data:
             covariate_data['sectors'] = pd.DataFrame(sector_data)
@@ -3598,6 +3668,7 @@ def get_enhanced_covariate_data(symbol: str, timeframe: str = "1d", lookback_day
                     print(f"  No data for {indicator} ({ticker_symbol})")
             except Exception as e:
                 print(f"  Error fetching {indicator} ({ticker_symbol}): {str(e)}")
+                # Continue with other indicators even if one fails
         
         if economic_data:
             covariate_data['economic_indicators'] = pd.DataFrame(economic_data)
@@ -3605,10 +3676,15 @@ def get_enhanced_covariate_data(symbol: str, timeframe: str = "1d", lookback_day
         else:
             print("No economic indicators data collected")
         
+        # Return whatever data we were able to collect
+        if not covariate_data:
+            print("Warning: No covariate data collected, returning empty dict")
+        
         return covariate_data
     
     except Exception as e:
         print(f"Error collecting covariate data: {str(e)}")
+        # Return empty dict instead of failing completely
         return {}
 
 def calculate_market_sentiment(symbol: str, lookback_days: int = 30) -> Dict[str, float]:
@@ -3631,7 +3707,7 @@ def calculate_market_sentiment(symbol: str, lookback_days: int = 30) -> Dict[str
         # Get news sentiment (simplified approach using yfinance news)
         try:
             ticker = yf.Ticker(symbol)
-            news = ticker.news
+            news = retry_yfinance_request(lambda: ticker.news)
             
             if news:
                 for article in news[:10]:  # Analyze last 10 news articles
@@ -3644,6 +3720,7 @@ def calculate_market_sentiment(symbol: str, lookback_days: int = 30) -> Dict[str
                     sentiment_scores.append(blob.sentiment.polarity)
         except Exception as e:
             print(f"Error fetching news sentiment: {str(e)}")
+            # Don't fail completely, just log the error
         
         # Calculate average sentiment
         if sentiment_scores:
@@ -3661,7 +3738,13 @@ def calculate_market_sentiment(symbol: str, lookback_days: int = 30) -> Dict[str
     
     except Exception as e:
         print(f"Error calculating sentiment: {str(e)}")
-        return {'sentiment_score': 0.0, 'sentiment_confidence': 0.0}
+        # Return neutral sentiment on error
+        return {
+            'sentiment_score': 0.0, 
+            'sentiment_confidence': 0.0,
+            'sentiment_samples': 0,
+            'error': str(e)
+        }
 
 def calculate_advanced_uncertainty(quantiles: np.ndarray, historical_volatility: float, 
                                  market_conditions: Dict = None, confidence_level: float = 0.9) -> Dict[str, np.ndarray]:
@@ -4261,11 +4344,11 @@ def get_market_info_from_yfinance(symbol: str) -> Dict:
     try:
         ticker = yf.Ticker(symbol)
         
-        # Get basic info
-        info = ticker.info
+        # Get basic info with retry
+        info = retry_yfinance_request(lambda: ticker.info)
         
-        # Get current market data
-        hist = ticker.history(period="1d")
+        # Get current market data with retry
+        hist = retry_yfinance_request(lambda: ticker.history(period="1d"))
         
         # Get additional market data
         market_data = {}
@@ -4281,25 +4364,28 @@ def get_market_info_from_yfinance(symbol: str) -> Dict:
                 'change_percent': ((hist['Close'].iloc[-1] - hist['Open'].iloc[-1]) / hist['Open'].iloc[-1]) * 100
             })
         
-        # Get news if available
+        # Get news if available with retry
         try:
-            news = ticker.news
+            news = retry_yfinance_request(lambda: ticker.news)
             market_data['news_count'] = len(news) if news else 0
-        except:
+        except Exception as e:
+            print(f"Error fetching news for {symbol}: {str(e)}")
             market_data['news_count'] = 0
         
-        # Get recommendations if available
+        # Get recommendations if available with retry
         try:
-            recommendations = ticker.recommendations
+            recommendations = retry_yfinance_request(lambda: ticker.recommendations)
             market_data['recommendations'] = recommendations.tail(5).to_dict('records') if not recommendations.empty else []
-        except:
+        except Exception as e:
+            print(f"Error fetching recommendations for {symbol}: {str(e)}")
             market_data['recommendations'] = []
         
-        # Get earnings info if available
+        # Get earnings info if available with retry
         try:
-            earnings = ticker.earnings
+            earnings = retry_yfinance_request(lambda: ticker.earnings)
             market_data['earnings'] = earnings.tail(4).to_dict('records') if not earnings.empty else []
-        except:
+        except Exception as e:
+            print(f"Error fetching earnings for {symbol}: {str(e)}")
             market_data['earnings'] = []
         
         # Combine all data
@@ -4313,6 +4399,7 @@ def get_market_info_from_yfinance(symbol: str) -> Dict:
         return result
         
     except Exception as e:
+        print(f"Error fetching market info for {symbol}: {str(e)}")
         return {
             'symbol': symbol,
             'error': str(e),
