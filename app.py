@@ -2645,12 +2645,13 @@ def create_interface():
             value=get_market_status_display()
         )
         
-        # Set up periodic updates for market status
-        market_status_display.every(
+        # Add a hidden timer button to trigger periodic updates
+        timer = gr.Button(visible=False)
+        timer.click(
             fn=update_market_status,
             inputs=None,
             outputs=market_status_display,
-            every=600  # Update every 10 minutes (600 seconds)
+            every=600  # Update every 10 minutes
         )
         
         # Add enhanced market information section
