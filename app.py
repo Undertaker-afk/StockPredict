@@ -7,9 +7,9 @@ import torch
 from chronos import ChronosPipeline
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import MinMaxScaler, StandardScaler
 import plotly.express as px
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Union
 import json
 import spaces
 import gc
@@ -19,6 +19,8 @@ import random
 from scipy import stats
 from scipy.optimize import minimize
 import warnings
+import threading
+from dataclasses import dataclass
 warnings.filterwarnings('ignore')
 
 # Additional imports for advanced features
@@ -30,12 +32,325 @@ except ImportError:
     print("Warning: hmmlearn not available. Regime detection will use simplified methods.")
 
 try:
-    from sklearn.ensemble import RandomForestRegressor
-    from sklearn.linear_model import LinearRegression
+    from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+    from sklearn.linear_model import LinearRegression, Ridge, Lasso
+    from sklearn.svm import SVR
+    from sklearn.neural_network import MLPRegressor
+    from sklearn.model_selection import TimeSeriesSplit
+    from sklearn.metrics import mean_squared_error, mean_absolute_error
     ENSEMBLE_AVAILABLE = True
 except ImportError:
     ENSEMBLE_AVAILABLE = False
     print("Warning: scikit-learn not available. Ensemble methods will be simplified.")
+
+# Additional imports for enhanced features
+try:
+    import requests
+    import re
+    from textblob import TextBlob
+    SENTIMENT_AVAILABLE = True
+except ImportError:
+    SENTIMENT_AVAILABLE = False
+    print("Warning: sentiment analysis not available.")
+
+try:
+    from arch import arch_model
+    GARCH_AVAILABLE = True
+except ImportError:
+    GARCH_AVAILABLE = False
+    print("Warning: arch not available. GARCH modeling will be simplified.")
+
+# Market status management
+@dataclass
+class MarketStatus:
+    """Data class to hold market status information"""
+    is_open: bool
+    status_text: str
+    next_trading_day: str
+    last_updated: str
+    time_until_open: str
+    time_until_close: str
+    current_time_et: str
+    market_name: str
+    market_type: str
+    market_symbol: str
+
+# Global configuration for market status updates
+MARKET_STATUS_UPDATE_INTERVAL_MINUTES = 10  # Update every 10 minutes
+
+# Market configurations for different exchanges
+MARKET_CONFIGS = {
+    'US_STOCKS': {
+        'name': 'US Stock Market',
+        'symbol': '^GSPC',  # S&P 500
+        'type': 'stocks',
+        'timezone': 'US/Eastern',
+        'open_time': '09:30',
+        'close_time': '16:00',
+        'days': [0, 1, 2, 3, 4],  # Monday to Friday
+        'description': 'NYSE, NASDAQ, AMEX'
+    },
+    'US_FUTURES': {
+        'name': 'US Futures Market',
+        'symbol': 'ES=F',  # E-mini S&P 500
+        'type': 'futures',
+        'timezone': 'US/Eastern',
+        'open_time': '18:00',  # Previous day
+        'close_time': '17:00',  # Current day
+        'days': [0, 1, 2, 3, 4, 5, 6],  # 24/7 trading
+        'description': 'CME, ICE, CBOT'
+    },
+    'FOREX': {
+        'name': 'Forex Market',
+        'symbol': 'EURUSD=X',
+        'type': 'forex',
+        'timezone': 'UTC',
+        'open_time': '00:00',
+        'close_time': '23:59',
+        'days': [0, 1, 2, 3, 4, 5, 6],  # 24/7 trading
+        'description': 'Global Currency Exchange'
+    },
+    'CRYPTO': {
+        'name': 'Cryptocurrency Market',
+        'symbol': 'BTC-USD',
+        'type': 'crypto',
+        'timezone': 'UTC',
+        'open_time': '00:00',
+        'close_time': '23:59',
+        'days': [0, 1, 2, 3, 4, 5, 6],  # 24/7 trading
+        'description': 'Bitcoin, Ethereum, Altcoins'
+    },
+    'COMMODITIES': {
+        'name': 'Commodities Market',
+        'symbol': 'GC=F',  # Gold Futures
+        'type': 'commodities',
+        'timezone': 'US/Eastern',
+        'open_time': '18:00',  # Previous day
+        'close_time': '17:00',  # Current day
+        'days': [0, 1, 2, 3, 4, 5, 6],  # 24/7 trading
+        'description': 'Gold, Silver, Oil, Natural Gas'
+    },
+    'EUROPE': {
+        'name': 'European Markets',
+        'symbol': '^STOXX50E',  # EURO STOXX 50
+        'type': 'stocks',
+        'timezone': 'Europe/London',
+        'open_time': '08:00',
+        'close_time': '16:30',
+        'days': [0, 1, 2, 3, 4],  # Monday to Friday
+        'description': 'London, Frankfurt, Paris'
+    },
+    'ASIA': {
+        'name': 'Asian Markets',
+        'symbol': '^N225',  # Nikkei 225
+        'type': 'stocks',
+        'timezone': 'Asia/Tokyo',
+        'open_time': '09:00',
+        'close_time': '15:30',
+        'days': [0, 1, 2, 3, 4],  # Monday to Friday
+        'description': 'Tokyo, Hong Kong, Shanghai'
+    }
+}
+
+class MarketStatusManager:
+    """Manages market status with periodic updates for multiple markets"""
+    
+    def __init__(self):
+        self.update_interval = MARKET_STATUS_UPDATE_INTERVAL_MINUTES * 60  # Convert to seconds
+        self._statuses = {}
+        self._lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._update_thread = None
+        self._start_update_thread()
+    
+    def _get_current_market_status(self, market_key: str = 'US_STOCKS') -> MarketStatus:
+        """Get current market status with detailed information for specific market"""
+        config = MARKET_CONFIGS[market_key]
+        now = datetime.now()
+        
+        # Convert to market timezone
+        market_tz = pytz.timezone(config['timezone'])
+        market_time = now.astimezone(market_tz)
+        
+        # Parse market hours
+        open_hour, open_minute = map(int, config['open_time'].split(':'))
+        close_hour, close_minute = map(int, config['close_time'].split(':'))
+        
+        # Check if it's a trading day
+        is_trading_day = market_time.weekday() in config['days']
+        
+        # Create market open/close times
+        market_open_time = market_time.replace(hour=open_hour, minute=open_minute, second=0, microsecond=0)
+        market_close_time = market_time.replace(hour=close_hour, minute=close_minute, second=0, microsecond=0)
+        
+        # Handle 24/7 markets and overnight sessions
+        if config['type'] in ['futures', 'forex', 'crypto', 'commodities']:
+            # 24/7 markets are always considered open
+            is_open = True
+            status_text = f"{config['name']} is currently open (24/7)"
+        else:
+            # Traditional markets
+            if not is_trading_day:
+                is_open = False
+                status_text = f"{config['name']} is closed (Weekend)"
+            elif market_open_time <= market_time <= market_close_time:
+                is_open = True
+                status_text = f"{config['name']} is currently open"
+            else:
+                is_open = False
+                if market_time < market_open_time:
+                    status_text = f"{config['name']} is closed (Before opening)"
+                else:
+                    status_text = f"{config['name']} is closed (After closing)"
+        
+        # Calculate next trading day
+        next_trading_day = self._get_next_trading_day(market_time, config['days'])
+        
+        # Calculate time until open/close
+        time_until_open = self._get_time_until_open(market_time, market_open_time, config)
+        time_until_close = self._get_time_until_close(market_time, market_close_time, config)
+        
+        return MarketStatus(
+            is_open=is_open,
+            status_text=status_text,
+            next_trading_day=next_trading_day.strftime('%Y-%m-%d'),
+            last_updated=market_time.strftime('%Y-%m-%d %H:%M:%S %Z'),
+            time_until_open=time_until_open,
+            time_until_close=time_until_close,
+            current_time_et=market_time.strftime('%H:%M:%S %Z'),
+            market_name=config['name'],
+            market_type=config['type'],
+            market_symbol=config['symbol']
+        )
+    
+    def _get_next_trading_day(self, current_time: datetime, trading_days: list) -> datetime:
+        """Get the next trading day for a specific market"""
+        next_day = current_time + timedelta(days=1)
+        
+        # Skip non-trading days
+        while next_day.weekday() not in trading_days:
+            next_day += timedelta(days=1)
+        
+        return next_day
+    
+    def _get_time_until_open(self, current_time: datetime, market_open_time: datetime, config: dict) -> str:
+        """Calculate time until market opens"""
+        if config['type'] in ['futures', 'forex', 'crypto', 'commodities']:
+            return "N/A (24/7 Market)"
+        
+        if current_time.weekday() not in config['days']:
+            # Weekend - calculate to next trading day
+            days_until_next = 1
+            while (current_time + timedelta(days=days_until_next)).weekday() not in config['days']:
+                days_until_next += 1
+            
+            next_trading_day = current_time + timedelta(days=days_until_next)
+            next_open = next_trading_day.replace(
+                hour=int(config['open_time'].split(':')[0]),
+                minute=int(config['open_time'].split(':')[1]),
+                second=0, microsecond=0
+            )
+            time_diff = next_open - current_time
+        else:
+            if current_time < market_open_time:
+                time_diff = market_open_time - current_time
+            else:
+                # Market already opened today, next opening is tomorrow
+                tomorrow = current_time + timedelta(days=1)
+                if tomorrow.weekday() in config['days']:
+                    next_open = tomorrow.replace(
+                        hour=int(config['open_time'].split(':')[0]),
+                        minute=int(config['open_time'].split(':')[1]),
+                        second=0, microsecond=0
+                    )
+                    time_diff = next_open - current_time
+                else:
+                    # Next day is weekend, calculate to next trading day
+                    days_until_next = 1
+                    while (current_time + timedelta(days=days_until_next)).weekday() not in config['days']:
+                        days_until_next += 1
+                    
+                    next_trading_day = current_time + timedelta(days=days_until_next)
+                    next_open = next_trading_day.replace(
+                        hour=int(config['open_time'].split(':')[0]),
+                        minute=int(config['open_time'].split(':')[1]),
+                        second=0, microsecond=0
+                    )
+                    time_diff = next_open - current_time
+        
+        return self._format_time_delta(time_diff)
+    
+    def _get_time_until_close(self, current_time: datetime, market_close_time: datetime, config: dict) -> str:
+        """Calculate time until market closes"""
+        if config['type'] in ['futures', 'forex', 'crypto', 'commodities']:
+            return "N/A (24/7 Market)"
+        
+        if current_time.weekday() not in config['days']:
+            return "N/A (Weekend)"
+        
+        if current_time < market_close_time:
+            time_diff = market_close_time - current_time
+            return self._format_time_delta(time_diff)
+        else:
+            return "Market closed for today"
+    
+    def _format_time_delta(self, time_diff: timedelta) -> str:
+        """Format timedelta into human-readable string"""
+        total_seconds = int(time_diff.total_seconds())
+        if total_seconds < 0:
+            return "N/A"
+        
+        days = total_seconds // 86400
+        hours = (total_seconds % 86400) // 3600
+        minutes = (total_seconds % 3600) // 60
+        
+        if days > 0:
+            return f"{days}d {hours}h {minutes}m"
+        elif hours > 0:
+            return f"{hours}h {minutes}m"
+        else:
+            return f"{minutes}m"
+    
+    def _update_loop(self):
+        """Background thread loop for updating market status"""
+        while not self._stop_event.is_set():
+            try:
+                new_statuses = {}
+                for market_key in MARKET_CONFIGS.keys():
+                    new_statuses[market_key] = self._get_current_market_status(market_key)
+                
+                with self._lock:
+                    self._statuses = new_statuses
+                time.sleep(self.update_interval)
+            except Exception as e:
+                print(f"Error updating market status: {str(e)}")
+                time.sleep(60)  # Wait 1 minute before retrying
+    
+    def _start_update_thread(self):
+        """Start the background update thread"""
+        if self._update_thread is None or not self._update_thread.is_alive():
+            self._stop_event.clear()
+            self._update_thread = threading.Thread(target=self._update_loop, daemon=True)
+            self._update_thread.start()
+    
+    def get_status(self, market_key: str = 'US_STOCKS') -> MarketStatus:
+        """Get current market status (thread-safe)"""
+        with self._lock:
+            if market_key not in self._statuses:
+                # Initialize if not exists
+                self._statuses[market_key] = self._get_current_market_status(market_key)
+            return self._statuses[market_key]
+    
+    def get_all_markets_status(self) -> Dict[str, MarketStatus]:
+        """Get status for all markets"""
+        with self._lock:
+            return self._statuses.copy()
+    
+    def stop(self):
+        """Stop the update thread"""
+        self._stop_event.set()
+        if self._update_thread and self._update_thread.is_alive():
+            self._update_thread.join(timeout=5)
 
 # Initialize global variables
 pipeline = None
@@ -46,6 +361,26 @@ scaler.fit_transform([[-1, 1]])
 market_data_cache = {}
 cache_expiry = {}
 CACHE_DURATION = 3600  # 1 hour cache
+
+# Initialize market status manager
+market_status_manager = MarketStatusManager()
+
+# Enhanced covariate data sources
+COVARIATE_SOURCES = {
+    'market_indices': ['^GSPC', '^DJI', '^IXIC', '^VIX', '^TNX', '^TYX'],
+    'sectors': ['XLF', 'XLK', 'XLE', 'XLV', 'XLI', 'XLP', 'XLU', 'XLB', 'XLY'],
+    'commodities': ['GC=F', 'SI=F', 'CL=F', 'NG=F', 'ZC=F', 'ZS=F'],
+    'currencies': ['EURUSD=X', 'GBPUSD=X', 'JPYUSD=X', 'CHFUSD=X', 'CADUSD=X']
+}
+
+# Economic indicators (using yfinance symbols for simplicity)
+ECONOMIC_INDICATORS = {
+    'inflation': '^TNX',  # 10-year Treasury yield as proxy
+    'volatility': '^VIX',  # VIX volatility index
+    'dollar': 'UUP',      # US Dollar Index
+    'gold': 'GLD',        # Gold ETF
+    'oil': 'USO'          # Oil ETF
+}
 
 def retry_yfinance_request(func, max_retries=3, initial_delay=1):
     """
@@ -106,29 +441,102 @@ def load_pipeline():
         raise RuntimeError(f"Failed to load model: {str(e)}")
 
 def is_market_open() -> bool:
-    """Check if the market is currently open"""
-    now = datetime.now()
-    # Check if it's a weekday (0 = Monday, 6 = Sunday)
-    if now.weekday() >= 5:  # Saturday or Sunday
-        return False
-    
-    # Check if it's during market hours (9:30 AM - 4:00 PM ET)
-    et_time = now.astimezone(pytz.timezone('US/Eastern'))
-    market_open = et_time.replace(hour=9, minute=30, second=0, microsecond=0)
-    market_close = et_time.replace(hour=16, minute=0, second=0, microsecond=0)
-    
-    return market_open <= et_time <= market_close
+    """Check if the US stock market is currently open (legacy function for backward compatibility)"""
+    return market_status_manager.get_status('US_STOCKS').is_open
 
 def get_next_trading_day() -> datetime:
-    """Get the next trading day"""
-    now = datetime.now()
-    next_day = now + timedelta(days=1)
+    """Get the next trading day for US stocks (legacy function for backward compatibility)"""
+    next_day_str = market_status_manager.get_status('US_STOCKS').next_trading_day
+    return datetime.strptime(next_day_str, '%Y-%m-%d')
+
+def get_market_status_display() -> str:
+    """Get formatted market status for display with multiple markets"""
+    all_statuses = market_status_manager.get_all_markets_status()
     
-    # Skip weekends
-    while next_day.weekday() >= 5:  # Saturday or Sunday
-        next_day += timedelta(days=1)
+    if not all_statuses:
+        # Fallback to US stocks only
+        status = market_status_manager.get_status('US_STOCKS')
+        return _format_single_market_status(status)
     
-    return next_day
+    # Create comprehensive market status display
+    status_message = "## 🌍 Global Market Status\n\n"
+    
+    # Group markets by type
+    market_groups = {
+        'stocks': ['US_STOCKS', 'EUROPE', 'ASIA'],
+        '24/7': ['FOREX', 'CRYPTO', 'US_FUTURES', 'COMMODITIES']
+    }
+    
+    for group_name, market_keys in market_groups.items():
+        status_message += f"### {group_name.upper()} MARKETS\n\n"
+        
+        for market_key in market_keys:
+            if market_key in all_statuses:
+                status = all_statuses[market_key]
+                status_message += _format_market_status_line(status)
+        
+        status_message += "\n"
+    
+    # Add summary
+    open_markets = sum(1 for status in all_statuses.values() if status.is_open)
+    total_markets = len(all_statuses)
+    status_message += f"**Summary:** {open_markets}/{total_markets} markets currently open\n\n"
+    status_message += f"*Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*"
+    
+    return status_message
+
+def _format_single_market_status(status: MarketStatus) -> str:
+    """Format single market status for display"""
+    status_icon = "🟢" if status.is_open else "🔴"
+    
+    status_message = f"""
+    ### {status_icon} {status.market_name}: {status.status_text}
+    
+    **Current Time ({status.current_time_et.split()[-1]}):** {status.current_time_et}  
+    **Next Trading Day:** {status.next_trading_day}  
+    **Last Updated:** {status.last_updated}
+    
+    """
+    
+    if status.is_open:
+        status_message += f"**Time Until Close:** {status.time_until_close}"
+    else:
+        status_message += f"**Time Until Open:** {status.time_until_open}"
+    
+    return status_message
+
+def _format_market_status_line(status: MarketStatus) -> str:
+    """Format a single line for market status display"""
+    status_icon = "🟢" if status.is_open else "🔴"
+    market_type_icon = {
+        'stocks': '📈',
+        'futures': '📊',
+        'forex': '💱',
+        'crypto': '₿',
+        'commodities': '🏭'
+    }.get(status.market_type, '📊')
+    
+    time_info = ""
+    if status.is_open:
+        if status.time_until_close != "N/A (24/7 Market)":
+            time_info = f" | Closes in: {status.time_until_close}"
+    else:
+        if status.time_until_open != "N/A (24/7 Market)":
+            time_info = f" | Opens in: {status.time_until_open}"
+    
+    return f"{status_icon} {market_type_icon} **{status.market_name}** ({status.market_symbol}){time_info}\n"
+
+def update_market_status() -> str:
+    """Function to update market status display (called by Gradio every parameter)"""
+    return get_market_status_display()
+
+def cleanup_on_exit():
+    """Cleanup function to stop market status manager when application exits"""
+    try:
+        market_status_manager.stop()
+        print("Market status manager stopped successfully")
+    except Exception as e:
+        print(f"Error stopping market status manager: {str(e)}")
 
 def get_historical_data(symbol: str, timeframe: str = "1d", lookback_days: int = 365) -> pd.DataFrame:
     """
@@ -366,16 +774,183 @@ def calculate_bollinger_bands(prices: pd.Series, period: int = 20, std_dev: int 
     lower_band = middle_band - (std * std_dev)
     return upper_band, middle_band, lower_band
 
-@spaces.GPU()
-def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5, strategy: str = "chronos",
-                   use_ensemble: bool = True, use_regime_detection: bool = True, use_stress_testing: bool = True,
-                   risk_free_rate: float = 0.02, ensemble_weights: Dict = None, 
-                   market_index: str = "^GSPC",
-                   random_real_points: int = 4, use_smoothing: bool = True, 
-                   smoothing_type: str = "exponential", smoothing_window: int = 5, 
-                   smoothing_alpha: float = 0.3) -> Tuple[Dict, go.Figure]:
+def predict_technical_indicators(df: pd.DataFrame, price_prediction: np.ndarray, 
+                               timeframe: str = "1d") -> Dict[str, np.ndarray]:
     """
-    Make prediction using selected strategy with advanced features.
+    Predict technical indicators based on price predictions.
+    
+    Args:
+        df (pd.DataFrame): Historical data with technical indicators
+        price_prediction (np.ndarray): Predicted prices
+        timeframe (str): Data timeframe for scaling
+    
+    Returns:
+        Dict[str, np.ndarray]: Predicted technical indicators
+    """
+    try:
+        predictions = {}
+        
+        # Get last values for initialization
+        last_rsi = df['RSI'].iloc[-1]
+        last_macd = df['MACD'].iloc[-1]
+        last_macd_signal = df['MACD_Signal'].iloc[-1]
+        last_bb_upper = df['BB_Upper'].iloc[-1] if 'BB_Upper' in df.columns else None
+        last_bb_middle = df['BB_Middle'].iloc[-1] if 'BB_Middle' in df.columns else None
+        last_bb_lower = df['BB_Lower'].iloc[-1] if 'BB_Lower' in df.columns else None
+        
+        # Predict RSI
+        rsi_predictions = []
+        for i, pred_price in enumerate(price_prediction):
+            # RSI tends to mean-revert, so we use a simple mean reversion model
+            if last_rsi > 70:  # Overbought
+                rsi_change = -0.5 * (i + 1)  # Gradual decline
+            elif last_rsi < 30:  # Oversold
+                rsi_change = 0.5 * (i + 1)   # Gradual rise
+            else:  # Neutral zone
+                rsi_change = 0.1 * np.random.normal(0, 1)  # Small random change
+            
+            predicted_rsi = max(0, min(100, last_rsi + rsi_change))
+            rsi_predictions.append(predicted_rsi)
+        
+        predictions['RSI'] = np.array(rsi_predictions)
+        
+        # Predict MACD
+        macd_predictions = []
+        macd_signal_predictions = []
+        
+        # MACD follows price momentum
+        price_changes = np.diff(price_prediction, prepend=price_prediction[0])
+        
+        for i, price_change in enumerate(price_changes):
+            # MACD change based on price momentum
+            macd_change = price_change / price_prediction[i] * 100  # Scale to MACD range
+            predicted_macd = last_macd + macd_change * 0.1  # Dampened change
+            
+            # MACD signal line (slower moving average of MACD)
+            signal_change = macd_change * 0.05  # Even slower
+            predicted_signal = last_macd_signal + signal_change
+            
+            macd_predictions.append(predicted_macd)
+            macd_signal_predictions.append(predicted_signal)
+        
+        predictions['MACD'] = np.array(macd_predictions)
+        predictions['MACD_Signal'] = np.array(macd_signal_predictions)
+        
+        # Predict Bollinger Bands if available
+        if all(x is not None for x in [last_bb_upper, last_bb_middle, last_bb_lower]):
+            bb_upper_predictions = []
+            bb_middle_predictions = []
+            bb_lower_predictions = []
+            
+            # Calculate rolling statistics for Bollinger Bands
+            window_size = 20
+            for i in range(len(price_prediction)):
+                if i < window_size:
+                    # Use historical data + predictions for calculation
+                    window_prices = np.concatenate([df['Close'].values[-window_size+i:], price_prediction[:i+1]])
+                else:
+                    # Use only predictions
+                    window_prices = price_prediction[i-window_size+1:i+1]
+                
+                # Calculate Bollinger Bands for this window
+                window_mean = np.mean(window_prices)
+                window_std = np.std(window_prices)
+                
+                bb_middle = window_mean
+                bb_upper = window_mean + (window_std * 2)
+                bb_lower = window_mean - (window_std * 2)
+                
+                bb_upper_predictions.append(bb_upper)
+                bb_middle_predictions.append(bb_middle)
+                bb_lower_predictions.append(bb_lower)
+            
+            predictions['BB_Upper'] = np.array(bb_upper_predictions)
+            predictions['BB_Middle'] = np.array(bb_middle_predictions)
+            predictions['BB_Lower'] = np.array(bb_lower_predictions)
+        
+        # Predict moving averages
+        sma_predictions = {}
+        for period in [20, 50, 200]:
+            if f'SMA_{period}' in df.columns:
+                last_sma = df[f'SMA_{period}'].iloc[-1]
+                sma_predictions[f'SMA_{period}'] = []
+                
+                for i in range(len(price_prediction)):
+                    # Simple moving average prediction
+                    if i < period:
+                        # Use historical data + predictions
+                        window_prices = np.concatenate([df['Close'].values[-period+i+1:], price_prediction[:i+1]])
+                    else:
+                        # Use only predictions
+                        window_prices = price_prediction[i-period+1:i+1]
+                    
+                    predicted_sma = np.mean(window_prices)
+                    sma_predictions[f'SMA_{period}'].append(predicted_sma)
+                
+                predictions[f'SMA_{period}'] = np.array(sma_predictions[f'SMA_{period}'])
+        
+        return predictions
+        
+    except Exception as e:
+        print(f"Error predicting technical indicators: {str(e)}")
+        # Return empty predictions on error
+        return {}
+
+def calculate_technical_uncertainty(df: pd.DataFrame, indicator_predictions: Dict[str, np.ndarray], 
+                                  price_prediction: np.ndarray) -> Dict[str, np.ndarray]:
+    """
+    Calculate uncertainty for technical indicator predictions.
+    
+    Args:
+        df (pd.DataFrame): Historical data
+        indicator_predictions (Dict[str, np.ndarray]): Predicted indicators
+        price_prediction (np.ndarray): Predicted prices
+    
+    Returns:
+        Dict[str, np.ndarray]: Uncertainty estimates for each indicator
+    """
+    try:
+        uncertainties = {}
+        
+        # Calculate historical volatility of each indicator
+        for indicator_name, predictions in indicator_predictions.items():
+            if indicator_name in df.columns:
+                # Calculate historical volatility
+                historical_values = df[indicator_name].dropna()
+                if len(historical_values) > 10:
+                    volatility = historical_values.std()
+                    
+                    # Scale uncertainty by prediction horizon
+                    indicator_uncertainty = []
+                    for i in range(len(predictions)):
+                        # Uncertainty increases with prediction horizon
+                        uncertainty = volatility * np.sqrt(i + 1)
+                        indicator_uncertainty.append(uncertainty)
+                    
+                    uncertainties[indicator_name] = np.array(indicator_uncertainty)
+                else:
+                    # Use a default uncertainty if insufficient data
+                    uncertainties[indicator_name] = np.array([0.1 * abs(predictions[0])] * len(predictions))
+            else:
+                # For new indicators, use a percentage of the prediction value
+                uncertainties[indicator_name] = np.array([0.05 * abs(pred) for pred in predictions])
+        
+        return uncertainties
+        
+    except Exception as e:
+        print(f"Error calculating technical uncertainty: {str(e)}")
+        return {}
+
+@spaces.GPU()
+def make_prediction_enhanced(symbol: str, timeframe: str = "1d", prediction_days: int = 5, strategy: str = "chronos",
+                           use_ensemble: bool = True, use_regime_detection: bool = True, use_stress_testing: bool = True,
+                           risk_free_rate: float = 0.02, ensemble_weights: Dict = None, 
+                           market_index: str = "^GSPC", use_covariates: bool = True, use_sentiment: bool = True,
+                           random_real_points: int = 4, use_smoothing: bool = True, 
+                           smoothing_type: str = "exponential", smoothing_window: int = 5, 
+                           smoothing_alpha: float = 0.3) -> Tuple[Dict, go.Figure]:
+    """
+    Enhanced prediction using Chronos with covariate data, advanced uncertainty calculations, and improved algorithms.
     
     Args:
         symbol (str): Stock symbol
@@ -388,6 +963,8 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
         risk_free_rate (float): Risk-free rate for calculations
         ensemble_weights (Dict): Weights for ensemble models
         market_index (str): Market index for correlation analysis
+        use_covariates (bool): Whether to use covariate data
+        use_sentiment (bool): Whether to use sentiment analysis
         random_real_points (int): Number of random real points to include in long-horizon context
         use_smoothing (bool): Whether to apply smoothing to predictions
         smoothing_type (str): Type of smoothing to apply ('exponential', 'moving_average', 'kalman', 'savitzky_golay', 'none')
@@ -398,6 +975,36 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
     try:
         # Get historical data
         df = get_historical_data(symbol, timeframe)
+        
+        # Collect enhanced covariate data
+        covariate_data = {}
+        market_conditions = {}
+        if use_covariates:
+            print("Collecting enhanced covariate data...")
+            covariate_data = get_enhanced_covariate_data(symbol, timeframe, 365)
+            
+            # Extract market conditions from covariate data
+            if 'economic_indicators' in covariate_data:
+                vix_data = covariate_data['economic_indicators'].get('volatility', None)
+                if vix_data is not None and len(vix_data) > 0:
+                    market_conditions['vix'] = vix_data.iloc[-1]
+        
+        # Calculate market sentiment
+        sentiment_data = {}
+        if use_sentiment:
+            print("Calculating market sentiment...")
+            sentiment_data = calculate_market_sentiment(symbol, 30)
+        
+        # Initialize technical predictions variables
+        technical_predictions = {}
+        technical_uncertainties = {}
+        
+        # Detect market regime
+        regime_info = {}
+        if use_regime_detection:
+            print("Detecting market regime...")
+            returns = df['Close'].pct_change().dropna()
+            regime_info = detect_market_regime(returns)
         
         if strategy == "chronos":
             try:
@@ -627,11 +1234,11 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                     # Make prediction
                     quantiles, mean = pipe.predict_quantiles(
                         context=context,
-                        prediction_length=actual_prediction_length,
-                        quantile_levels=[0.1, 0.5, 0.9]
+                        prediction_length=prediction_length,
+                        quantile_levels=quantile_levels
                     )
                 
-                if quantiles is None or mean is None:
+                if quantiles is None or mean is None or len(quantiles) == 0 or len(mean) == 0:
                     raise ValueError("Chronos returned empty prediction")
                 
                 print(f"Quantiles shape: {quantiles.shape}, Mean shape: {mean.shape}")
@@ -645,15 +1252,19 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                 lower_bound = scaler.inverse_transform(quantiles[0, :, 0].reshape(-1, 1)).flatten()
                 upper_bound = scaler.inverse_transform(quantiles[0, :, 2].reshape(-1, 1)).flatten()
                 
-                # Calculate standard deviation from quantiles
-                std_pred = (upper_bound - lower_bound) / (2 * 1.645)
+                # Calculate uncertainty using advanced methods
+                historical_volatility = df['Volatility'].iloc[-1]
+                advanced_uncertainties = calculate_advanced_uncertainty(
+                    quantiles, historical_volatility, market_conditions
+                )
+                std_pred = advanced_uncertainties.get('ensemble', 
+                    (upper_bound - lower_bound) / (2 * 1.645))
                 
-                # Check for discontinuity and apply continuity correction
-                last_actual = prices[-1]
+                # Apply continuity correction
+                last_actual = df['Close'].iloc[-1]
                 first_pred = mean_pred[0]
-                if abs(first_pred - last_actual) > max(1e-6, 0.005 * abs(last_actual)):  # Further reduced threshold
+                if abs(first_pred - last_actual) > max(1e-6, 0.05 * abs(last_actual)):
                     print(f"Warning: Discontinuity detected between last actual ({last_actual}) and first prediction ({first_pred})")
-                    # Apply continuity correction to first prediction
                     mean_pred[0] = last_actual
                     # Adjust subsequent predictions to maintain trend with optional smoothing
                     if len(mean_pred) > 1:
@@ -698,14 +1309,7 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                         if len(context.shape) == 1:
                             context = context.unsqueeze(0)
                         
-                        # Calculate next prediction length based on timeframe
-                        if timeframe == "1d":
-                            next_length = min(max_prediction_length, remaining_steps)
-                        elif timeframe == "1h":
-                            next_length = min(max_prediction_length, remaining_steps)
-                        else:
-                            next_length = min(max_prediction_length, remaining_steps)
-                        
+                        next_length = min(max_prediction_length, remaining_steps)
                         with torch.amp.autocast('cuda'):
                             next_quantiles, next_mean = pipe.predict_quantiles(
                                 context=context,
@@ -719,11 +1323,13 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                         
                         # Denormalize predictions using the original scaler
                         next_mean_pred = original_scaler.inverse_transform(next_mean.reshape(-1, 1)).flatten()
-                        next_lower = original_scaler.inverse_transform(next_quantiles[0, :, 0].reshape(-1, 1)).flatten()
-                        next_upper = original_scaler.inverse_transform(next_quantiles[0, :, 2].reshape(-1, 1)).flatten()
                         
-                        # Calculate standard deviation
-                        next_std_pred = (next_upper - next_lower) / (2 * 1.645)
+                        # Calculate uncertainty for extended predictions
+                        next_uncertainties = calculate_advanced_uncertainty(
+                            next_quantiles, historical_volatility, market_conditions
+                        )
+                        next_std_pred = next_uncertainties.get('ensemble', 
+                            (next_quantiles[0, :, 2] - next_quantiles[0, :, 0]) / (2 * 1.645))
                         
                         # Check for discontinuity and apply continuity correction
                         if abs(next_mean_pred[0] - extended_mean_pred[-1]) > max(1e-6, 0.05 * abs(extended_mean_pred[-1])):
@@ -751,385 +1357,156 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                     mean_pred = extended_mean_pred[:trim_length]
                     std_pred = extended_std_pred[:trim_length]
                 
-                # Extend Chronos forecasting to volume and technical indicators
-                volume_pred = None
-                rsi_pred = None
-                macd_pred = None
+                # Enhanced volume prediction
+                volume_pred, volume_uncertainty = calculate_volume_prediction_enhanced(
+                    df, mean_pred, covariate_data
+                )
                 
-                try:
-                    # Prepare volume data for Chronos
-                    volume_data = df['Volume'].values
-                    if len(volume_data) >= chronos_context_size:
-                        # Normalize volume data
-                        scaler_range = min(len(volume_data), chronos_context_size * 2)
-                        context_window = volume_data[-chronos_context_size:]
-                        volume_scaler = MinMaxScaler(feature_range=(-1, 1))
-                        # Fit scaler on a larger range for better normalization
-                        volume_scaler.fit(volume_data[-scaler_range:].reshape(-1, 1))
-                        normalized_volume = volume_scaler.transform(context_window.reshape(-1, 1)).flatten()
-                        if len(normalized_volume) < chronos_context_size:
-                            padding = np.full(chronos_context_size - len(normalized_volume), normalized_volume[-1])
-                            normalized_volume = np.concatenate([padding, normalized_volume])
-                        elif len(normalized_volume) > chronos_context_size:
-                            normalized_volume = normalized_volume[-chronos_context_size:]
-                        volume_context = torch.tensor(normalized_volume, dtype=dtype, device=device)
-                        if len(volume_context.shape) == 1:
-                            volume_context = volume_context.unsqueeze(0)
-                        with torch.amp.autocast('cuda'):
-                            volume_quantiles, volume_mean = pipe.predict_quantiles(
-                                context=volume_context,
-                                prediction_length=actual_prediction_length,
-                                quantile_levels=[0.1, 0.5, 0.9]
-                            )
-                        volume_quantiles = volume_quantiles.detach().cpu().numpy()
-                        volume_mean = volume_mean.detach().cpu().numpy()
-                        volume_pred = volume_scaler.inverse_transform(volume_mean.reshape(-1, 1)).flatten()
-                        lower_bound = volume_scaler.inverse_transform(volume_quantiles[0, :, 0].reshape(-1, 1)).flatten()
-                        upper_bound = volume_scaler.inverse_transform(volume_quantiles[0, :, 2].reshape(-1, 1)).flatten()
-                        std_pred_vol = (upper_bound - lower_bound) / (2 * 1.645)
-                        last_actual = volume_data[-1]
-                        first_pred = volume_pred[0]
-                        if abs(first_pred - last_actual) > max(1e-6, 0.005 * abs(last_actual)):
-                            print(f"Warning: Discontinuity detected between last actual volume ({last_actual}) and first prediction ({first_pred})")
-                            # Apply continuity correction
-                            volume_pred[0] = last_actual
-                            # Adjust subsequent predictions to maintain trend with optional smoothing
-                            if len(volume_pred) > 1:
-                                # Calculate the trend from the original prediction
-                                original_trend = volume_pred[1] - first_pred
-                                # Apply the same trend but starting from the last actual value
-                                for i in range(1, len(volume_pred)):
-                                    volume_pred[i] = last_actual + original_trend * i
-                                
-                                # Apply financial smoothing if enabled
-                                if use_smoothing:
-                                    volume_pred = apply_financial_smoothing(volume_pred, smoothing_type, smoothing_window, smoothing_alpha, 3, use_smoothing)
-                        
-                        # Extend volume predictions if needed
-                        if actual_prediction_length < trim_length:
-                            extended_volume_pred = volume_pred.copy()
-                            extended_volume_std = std_pred_vol.copy()
-                            remaining_steps = trim_length - actual_prediction_length
-                            steps_needed = (remaining_steps + actual_prediction_length - 1) // actual_prediction_length
-                            
-                            for step in range(steps_needed):
-                                # Use all available datapoints for context, including predictions
-                                # This allows the model to build upon its own predictions for better long-horizon forecasting
-                                all_available_data = np.concatenate([volume_data, extended_volume_pred])
-                                
-                                # If we have more data than chronos_context_size, use the most recent chronos_context_size points
-                                # Otherwise, use all available data (this allows for longer context when available)
-                                if len(all_available_data) > chronos_context_size:
-                                    context_window = all_available_data[-chronos_context_size:]
-                                else:
-                                    context_window = all_available_data
-                                
-                                # Use the original volume scaler to maintain consistency - fit on historical data only
-                                # but transform the combined context window
-                                normalized_context = volume_scaler.transform(context_window.reshape(-1, 1)).flatten()
-                                context = torch.tensor(normalized_context, dtype=dtype, device=device)
-                                if len(context.shape) == 1:
-                                    context = context.unsqueeze(0)
-                                
-                                next_length = min(chronos_context_size, remaining_steps)
-                                with torch.amp.autocast('cuda'):
-                                    next_quantiles, next_mean = pipe.predict_quantiles(
-                                        context=context,
-                                        prediction_length=next_length,
-                                        quantile_levels=[0.1, 0.5, 0.9]
-                                    )
-                                next_mean = next_mean.detach().cpu().numpy()
-                                next_quantiles = next_quantiles.detach().cpu().numpy()
-                                next_mean_pred = volume_scaler.inverse_transform(next_mean.reshape(-1, 1)).flatten()
-                                next_lower = volume_scaler.inverse_transform(next_quantiles[0, :, 0].reshape(-1, 1)).flatten()
-                                next_upper = volume_scaler.inverse_transform(next_quantiles[0, :, 2].reshape(-1, 1)).flatten()
-                                next_std_pred = (next_upper - next_lower) / (2 * 1.645)
-                                
-                                # Check for discontinuity and apply continuity correction
-                                if abs(next_mean_pred[0] - extended_volume_pred[-1]) > max(1e-6, 0.05 * abs(extended_volume_pred[-1])):
-                                    print(f"Warning: Discontinuity detected between last volume prediction ({extended_volume_pred[-1]}) and next prediction ({next_mean_pred[0]})")
-                                    next_mean_pred[0] = extended_volume_pred[-1]
-                                    if len(next_mean_pred) > 1:
-                                        original_trend = next_mean_pred[1] - next_mean_pred[0]
-                                        for i in range(1, len(next_mean_pred)):
-                                            next_mean_pred[i] = extended_volume_pred[-1] + original_trend * i
-                                
-                                # Apply financial smoothing if enabled
-                                if use_smoothing and len(next_mean_pred) > 1:
-                                    next_mean_pred = apply_financial_smoothing(next_mean_pred, smoothing_type, smoothing_window, smoothing_alpha, 3, use_smoothing)
-                                
-                                extended_volume_pred = np.concatenate([extended_volume_pred, next_mean_pred])
-                                extended_volume_std = np.concatenate([extended_volume_std, next_std_pred])
-                                remaining_steps -= len(next_mean_pred)
-                                if remaining_steps <= 0:
-                                    break
-                            volume_pred = extended_volume_pred[:trim_length]
-                    else:
-                        avg_volume = df['Volume'].mean()
-                        volume_pred = np.full(trim_length, avg_volume)
-                except Exception as e:
-                    print(f"Volume prediction error: {str(e)}")
-                    # Fallback: use historical average
-                    avg_volume = df['Volume'].mean()
-                    volume_pred = np.full(trim_length, avg_volume)
+                # Predict technical indicators
+                print("Predicting technical indicators...")
+                technical_predictions = predict_technical_indicators(df, mean_pred, timeframe)
+                technical_uncertainties = calculate_technical_uncertainty(df, technical_predictions, mean_pred)
                 
-                try:
-                    # Prepare RSI data for Chronos
-                    rsi_data = df['RSI'].values
-                    if len(rsi_data) >= chronos_context_size and not np.any(np.isnan(rsi_data)):
-                        # RSI is already normalized (0-100), but we'll scale it to (-1, 1)
-                        scaler_range = min(len(rsi_data), chronos_context_size * 2)
-                        context_window = rsi_data[-chronos_context_size:]
-                        rsi_scaler = MinMaxScaler(feature_range=(-1, 1))
-                        # Fit scaler on a larger range for better normalization
-                        rsi_scaler.fit(rsi_data[-scaler_range:].reshape(-1, 1))
-                        normalized_rsi = rsi_scaler.transform(context_window.reshape(-1, 1)).flatten()
-                        if len(normalized_rsi) < chronos_context_size:
-                            padding = np.full(chronos_context_size - len(normalized_rsi), normalized_rsi[-1])
-                            normalized_rsi = np.concatenate([padding, normalized_rsi])
-                        elif len(normalized_rsi) > chronos_context_size:
-                            normalized_rsi = normalized_rsi[-chronos_context_size:]
-                        rsi_context = torch.tensor(normalized_rsi, dtype=dtype, device=device)
-                        if len(rsi_context.shape) == 1:
-                            rsi_context = rsi_context.unsqueeze(0)
-                        with torch.amp.autocast('cuda'):
-                            rsi_quantiles, rsi_mean = pipe.predict_quantiles(
-                                context=rsi_context,
-                                prediction_length=actual_prediction_length,
-                                quantile_levels=[0.1, 0.5, 0.9]
-                            )
-                        # Convert and denormalize RSI predictions
-                        rsi_quantiles = rsi_quantiles.detach().cpu().numpy()
-                        rsi_mean = rsi_mean.detach().cpu().numpy()
-                        rsi_pred = rsi_scaler.inverse_transform(rsi_mean.reshape(-1, 1)).flatten()
-                        # Clamp RSI to valid range (0-100)
-                        lower_bound = rsi_scaler.inverse_transform(rsi_quantiles[0, :, 0].reshape(-1, 1)).flatten()
-                        upper_bound = rsi_scaler.inverse_transform(rsi_quantiles[0, :, 2].reshape(-1, 1)).flatten()
-                        std_pred_rsi = (upper_bound - lower_bound) / (2 * 1.645)
-                        rsi_pred = np.clip(rsi_pred, 0, 100)
-                        last_actual = rsi_data[-1]
-                        first_pred = rsi_pred[0]
-                        if abs(first_pred - last_actual) > max(1e-6, 0.005 * abs(last_actual)):
-                            print(f"Warning: Discontinuity detected between last actual RSI ({last_actual}) and first prediction ({first_pred})")
-                            # Apply continuity correction
-                            rsi_pred[0] = last_actual
-                            if len(rsi_pred) > 1:
-                                trend = rsi_pred[1] - first_pred
-                                rsi_pred[1:] = rsi_pred[1:] - first_pred + last_actual
-                                rsi_pred = np.clip(rsi_pred, 0, 100)  # Re-clip after adjustment
-                        
-                        # Extend RSI predictions if needed
-                        if actual_prediction_length < trim_length:
-                            extended_rsi_pred = rsi_pred.copy()
-                            extended_rsi_std = std_pred_rsi.copy()
-                            remaining_steps = trim_length - actual_prediction_length
-                            steps_needed = (remaining_steps + actual_prediction_length - 1) // actual_prediction_length
-                            
-                            for step in range(steps_needed):
-                                # Use all available datapoints for context, including predictions
-                                # This allows the model to build upon its own predictions for better long-horizon forecasting
-                                all_available_data = np.concatenate([rsi_data, extended_rsi_pred])
-                                
-                                # If we have more data than chronos_context_size, use the most recent chronos_context_size points
-                                # Otherwise, use all available data (this allows for longer context when available)
-                                if len(all_available_data) > chronos_context_size:
-                                    context_window = all_available_data[-chronos_context_size:]
-                                else:
-                                    context_window = all_available_data
-                                
-                                # Use the original RSI scaler to maintain consistency - fit on historical data only
-                                # but transform the combined context window
-                                normalized_context = rsi_scaler.transform(context_window.reshape(-1, 1)).flatten()
-                                context = torch.tensor(normalized_context, dtype=dtype, device=device)
-                                if len(context.shape) == 1:
-                                    context = context.unsqueeze(0)
-                                
-                                next_length = min(chronos_context_size, remaining_steps)
-                                with torch.amp.autocast('cuda'):
-                                    next_quantiles, next_mean = pipe.predict_quantiles(
-                                        context=context,
-                                        prediction_length=next_length,
-                                        quantile_levels=[0.1, 0.5, 0.9]
-                                    )
-                                next_mean = next_mean.detach().cpu().numpy()
-                                next_quantiles = next_quantiles.detach().cpu().numpy()
-                                next_mean_pred = rsi_scaler.inverse_transform(next_mean.reshape(-1, 1)).flatten()
-                                next_lower = rsi_scaler.inverse_transform(next_quantiles[0, :, 0].reshape(-1, 1)).flatten()
-                                next_upper = rsi_scaler.inverse_transform(next_quantiles[0, :, 2].reshape(-1, 1)).flatten()
-                                next_std_pred = (next_upper - next_lower) / (2 * 1.645)
-                                next_mean_pred = np.clip(next_mean_pred, 0, 100)
-                                
-                                # Check for discontinuity and apply continuity correction
-                                if abs(next_mean_pred[0] - extended_rsi_pred[-1]) > max(1e-6, 0.005 * abs(extended_rsi_pred[-1])):
-                                    print(f"Warning: Discontinuity detected between last RSI prediction ({extended_rsi_pred[-1]}) and next prediction ({next_mean_pred[0]})")
-                                    next_mean_pred[0] = extended_rsi_pred[-1]
-                                    if len(next_mean_pred) > 1:
-                                        original_trend = next_mean_pred[1] - next_mean_pred[0]
-                                        for i in range(1, len(next_mean_pred)):
-                                            next_mean_pred[i] = extended_rsi_pred[-1] + original_trend * i
-                                        next_mean_pred = np.clip(next_mean_pred, 0, 100)
-                                
-                                # Apply financial smoothing if enabled
-                                if use_smoothing and len(next_mean_pred) > 1:
-                                    next_mean_pred = apply_financial_smoothing(next_mean_pred, smoothing_type, smoothing_window, smoothing_alpha, 3, use_smoothing)
-                                    next_mean_pred = np.clip(next_mean_pred, 0, 100)
-                                
-                                extended_rsi_pred = np.concatenate([extended_rsi_pred, next_mean_pred])
-                                extended_rsi_std = np.concatenate([extended_rsi_std, next_std_pred])
-                                remaining_steps -= len(next_mean_pred)
-                                if remaining_steps <= 0:
-                                    break
-                            rsi_pred = extended_rsi_pred[:trim_length]
-                    else:
-                        last_rsi = df['RSI'].iloc[-1]
-                        rsi_pred = np.full(trim_length, last_rsi)
-                except Exception as e:
-                    print(f"RSI prediction error: {str(e)}")
-                    # Fallback: use last known RSI value
-                    last_rsi = df['RSI'].iloc[-1]
-                    rsi_pred = np.full(trim_length, last_rsi)
+                # Create ensemble prediction if enabled
+                ensemble_pred = np.array([])
+                ensemble_uncertainty = np.array([])
+                if use_ensemble and covariate_data:
+                    print("Creating enhanced ensemble model...")
+                    ensemble_pred, ensemble_uncertainty = create_enhanced_ensemble_model(
+                        df, covariate_data, trim_length
+                    )
                 
-                try:
-                    # Prepare MACD data for Chronos
-                    macd_data = df['MACD'].values
-                    if len(macd_data) >= chronos_context_size and not np.any(np.isnan(macd_data)):
-                        # Normalize MACD data
-                        scaler_range = min(len(macd_data), chronos_context_size * 2)
-                        context_window = macd_data[-chronos_context_size:]
-                        macd_scaler = MinMaxScaler(feature_range=(-1, 1))
-                        # Fit scaler on a larger range for better normalization
-                        macd_scaler.fit(macd_data[-scaler_range:].reshape(-1, 1))
-                        normalized_macd = macd_scaler.transform(context_window.reshape(-1, 1)).flatten()
-                        if len(normalized_macd) < chronos_context_size:
-                            padding = np.full(chronos_context_size - len(normalized_macd), normalized_macd[-1])
-                            normalized_macd = np.concatenate([padding, normalized_macd])
-                        elif len(normalized_macd) > chronos_context_size:
-                            normalized_macd = normalized_macd[-chronos_context_size:]
-                        macd_context = torch.tensor(normalized_macd, dtype=dtype, device=device)
-                        if len(macd_context.shape) == 1:
-                            macd_context = macd_context.unsqueeze(0)
-                        with torch.amp.autocast('cuda'):
-                            macd_quantiles, macd_mean = pipe.predict_quantiles(
-                                context=macd_context,
-                                prediction_length=actual_prediction_length,
-                                quantile_levels=[0.1, 0.5, 0.9]
-                            )
-                        # Convert and denormalize MACD predictions
-                        macd_quantiles = macd_quantiles.detach().cpu().numpy()
-                        macd_mean = macd_mean.detach().cpu().numpy()
-                        macd_pred = macd_scaler.inverse_transform(macd_mean.reshape(-1, 1)).flatten()
-                        lower_bound = macd_scaler.inverse_transform(macd_quantiles[0, :, 0].reshape(-1, 1)).flatten()
-                        upper_bound = macd_scaler.inverse_transform(macd_quantiles[0, :, 2].reshape(-1, 1)).flatten()
-                        std_pred_macd = (upper_bound - lower_bound) / (2 * 1.645)
-                        last_actual = macd_data[-1]
-                        first_pred = macd_pred[0]
-
-                        # Check for discontinuity and apply continuity correction
-                        if abs(first_pred - last_actual) > max(1e-6, 0.005 * abs(last_actual)):
-                            print(f"Warning: Discontinuity detected between last actual MACD ({last_actual}) and first prediction ({first_pred})")
-                            # Apply continuity correction
-                            macd_pred[0] = last_actual
-                            # Adjust subsequent predictions to maintain trend with optional smoothing
-                            if len(macd_pred) > 1:
-                                # Calculate the trend from the original prediction
-                                original_trend = macd_pred[1] - first_pred
-                                # Apply the same trend but starting from the last actual value
-                                for i in range(1, len(macd_pred)):
-                                    macd_pred[i] = last_actual + original_trend * i
-                                
-                                # Apply financial smoothing if enabled
-                                if use_smoothing:
-                                    macd_pred = apply_financial_smoothing(macd_pred, smoothing_type, smoothing_window, smoothing_alpha, 3, use_smoothing)
-                        
-                        # Extend MACD predictions if needed
-                        if actual_prediction_length < trim_length:
-                            extended_macd_pred = macd_pred.copy()
-                            extended_macd_std = std_pred_macd.copy()
-                            remaining_steps = trim_length - actual_prediction_length
-                            steps_needed = (remaining_steps + actual_prediction_length - 1) // actual_prediction_length
-                            
-                            for step in range(steps_needed):
-                                # Use all available datapoints for context, including predictions
-                                # This allows the model to build upon its own predictions for better long-horizon forecasting
-                                all_available_data = np.concatenate([macd_data, extended_macd_pred])
-                                
-                                # If we have more data than chronos_context_size, use the most recent chronos_context_size points
-                                # Otherwise, use all available data (this allows for longer context when available)
-                                if len(all_available_data) > chronos_context_size:
-                                    context_window = all_available_data[-chronos_context_size:]
-                                else:
-                                    context_window = all_available_data
-                                
-                                # Use the original MACD scaler to maintain consistency - fit on historical data only
-                                # but transform the combined context window
-                                normalized_context = macd_scaler.transform(context_window.reshape(-1, 1)).flatten()
-                                context = torch.tensor(normalized_context, dtype=dtype, device=device)
-                                if len(context.shape) == 1:
-                                    context = context.unsqueeze(0)
-                                
-                                next_length = min(chronos_context_size, remaining_steps)
-                                with torch.amp.autocast('cuda'):
-                                    next_quantiles, next_mean = pipe.predict_quantiles(
-                                        context=context,
-                                        prediction_length=next_length,
-                                        quantile_levels=[0.1, 0.5, 0.9]
-                                    )
-                                next_mean = next_mean.detach().cpu().numpy()
-                                next_quantiles = next_quantiles.detach().cpu().numpy()
-                                next_mean_pred = macd_scaler.inverse_transform(next_mean.reshape(-1, 1)).flatten()
-                                next_lower = macd_scaler.inverse_transform(next_quantiles[0, :, 0].reshape(-1, 1)).flatten()
-                                next_upper = macd_scaler.inverse_transform(next_quantiles[0, :, 2].reshape(-1, 1)).flatten()
-                                next_std_pred = (next_upper - next_lower) / (2 * 1.645)
-                                
-                                # Check for discontinuity and apply continuity correction
-                                if abs(next_mean_pred[0] - extended_macd_pred[-1]) > max(1e-6, 0.05 * abs(extended_macd_pred[-1])):
-                                    print(f"Warning: Discontinuity detected between last MACD prediction ({extended_macd_pred[-1]}) and next prediction ({next_mean_pred[0]})")
-                                    next_mean_pred[0] = extended_macd_pred[-1]
-                                    if len(next_mean_pred) > 1:
-                                        original_trend = next_mean_pred[1] - next_mean_pred[0]
-                                        for i in range(1, len(next_mean_pred)):
-                                            next_mean_pred[i] = extended_macd_pred[-1] + original_trend * i
-                                
-                                # Apply financial smoothing if enabled
-                                if use_smoothing and len(next_mean_pred) > 1:
-                                    next_mean_pred = apply_financial_smoothing(next_mean_pred, smoothing_type, smoothing_window, smoothing_alpha, 3, use_smoothing)
-                                
-                                extended_macd_pred = np.concatenate([extended_macd_pred, next_mean_pred])
-                                extended_macd_std = np.concatenate([extended_macd_std, next_std_pred])
-                                remaining_steps -= len(next_mean_pred)
-                                if remaining_steps <= 0:
-                                    break
-                            macd_pred = extended_macd_pred[:trim_length]
-                    else:
-                        last_macd = df['MACD'].iloc[-1]
-                        macd_pred = np.full(trim_length, last_macd)
-                except Exception as e:
-                    print(f"MACD prediction error: {str(e)}")
-                    # Fallback: use last known MACD value
-                    last_macd = df['MACD'].iloc[-1]
-                    macd_pred = np.full(trim_length, last_macd)
+                # Combine Chronos and ensemble predictions
+                if len(ensemble_pred) > 0:
+                    # Weighted combination
+                    chronos_weight = 0.7
+                    ensemble_weight = 0.3
+                    final_pred = chronos_weight * mean_pred + ensemble_weight * ensemble_pred
+                    final_uncertainty = np.sqrt(
+                        (chronos_weight * std_pred)**2 + (ensemble_weight * ensemble_uncertainty)**2
+                    )
+                else:
+                    final_pred = mean_pred
+                    final_uncertainty = std_pred
+                
             except Exception as e:
                 print(f"Chronos prediction error: {str(e)}")
-                print(f"Error type: {type(e)}")
-                print(f"Error details: {str(e)}")
                 raise
         
-        if strategy == "technical":
-            # Technical analysis based prediction
-            last_price = df['Close'].iloc[-1]
-            rsi = df['RSI'].iloc[-1]
-            macd = df['MACD'].iloc[-1]
-            macd_signal = df['MACD_Signal'].iloc[-1]
-            
-            # Simple prediction based on technical indicators
-            trend = 1 if (rsi > 50 and macd > macd_signal) else -1
-            volatility = df['Volatility'].iloc[-1]
-            
-            # Generate predictions
-            mean_pred = np.array([last_price * (1 + trend * volatility * i) for i in range(1, prediction_days + 1)])
-            std_pred = np.array([volatility * last_price * i for i in range(1, prediction_days + 1)])
+        elif strategy == "technical":
+            # Technical analysis fallback strategy
+            print("Using technical analysis strategy...")
+            try:
+                # Use the same MinMaxScaler for consistency
+                prices = df['Close'].values
+                scaler = MinMaxScaler(feature_range=(-1, 1))
+                scaler.fit(prices.reshape(-1, 1))
+                
+                # Calculate technical indicators for prediction
+                last_price = df['Close'].iloc[-1]
+                last_rsi = df['RSI'].iloc[-1]
+                last_macd = df['MACD'].iloc[-1]
+                last_macd_signal = df['MACD_Signal'].iloc[-1]
+                last_volatility = df['Volatility'].iloc[-1]
+                
+                # Get trend direction from technical indicators
+                rsi_trend = 1 if last_rsi > 50 else -1
+                macd_trend = 1 if last_macd > last_macd_signal else -1
+                
+                # Calculate momentum and mean reversion factors
+                sma_20 = df['SMA_20'].iloc[-1] if 'SMA_20' in df.columns else last_price
+                sma_50 = df['SMA_50'].iloc[-1] if 'SMA_50' in df.columns else last_price
+                sma_200 = df['SMA_200'].iloc[-1] if 'SMA_200' in df.columns else last_price
+                
+                # Mean reversion factor (distance from long-term average)
+                mean_reversion = (sma_200 - last_price) / last_price
+                
+                # Momentum factor (short vs long-term trend)
+                momentum = (sma_20 - sma_50) / sma_50
+                
+                # Combine technical signals
+                technical_score = (rsi_trend * 0.3 + macd_trend * 0.3 + 
+                                 np.sign(momentum) * 0.2 + np.sign(mean_reversion) * 0.2)
+                
+                # Generate price predictions
+                final_pred = []
+                final_uncertainty = []
+                
+                for i in range(1, prediction_days + 1):
+                    # Base prediction with trend and mean reversion
+                    trend_factor = technical_score * last_volatility * 0.5
+                    mean_reversion_factor = mean_reversion * 0.1 * i
+                    momentum_factor = momentum * 0.05 * i
+                    
+                    # Combine factors with decay
+                    prediction = last_price * (1 + trend_factor + mean_reversion_factor + momentum_factor)
+                    final_pred.append(prediction)
+                    
+                    # Uncertainty based on volatility and prediction horizon
+                    uncertainty = last_volatility * last_price * np.sqrt(i)
+                    final_uncertainty.append(uncertainty)
+                
+                final_pred = np.array(final_pred)
+                final_uncertainty = np.array(final_uncertainty)
+                
+                # Apply smoothing if enabled
+                if use_smoothing:
+                    final_pred = apply_financial_smoothing(final_pred, smoothing_type, smoothing_window, smoothing_alpha, 3, use_smoothing)
+                
+                # Enhanced volume prediction
+                volume_pred, volume_uncertainty = calculate_volume_prediction_enhanced(
+                    df, final_pred, covariate_data
+                )
+                
+                # Predict technical indicators
+                print("Predicting technical indicators for technical strategy...")
+                technical_predictions = predict_technical_indicators(df, final_pred, timeframe)
+                technical_uncertainties = calculate_technical_uncertainty(df, technical_predictions, final_pred)
+                
+                # Create ensemble prediction if enabled
+                ensemble_pred = np.array([])
+                ensemble_uncertainty = np.array([])
+                if use_ensemble and covariate_data:
+                    print("Creating enhanced ensemble model for technical strategy...")
+                    ensemble_pred, ensemble_uncertainty = create_enhanced_ensemble_model(
+                        df, covariate_data, prediction_days
+                    )
+                
+                # Combine technical and ensemble predictions
+                if len(ensemble_pred) > 0:
+                    technical_weight = 0.7
+                    ensemble_weight = 0.3
+                    final_pred = technical_weight * final_pred + ensemble_weight * ensemble_pred
+                    final_uncertainty = np.sqrt(
+                        (technical_weight * final_uncertainty)**2 + (ensemble_weight * ensemble_uncertainty)**2
+                    )
+                
+                print(f"Technical strategy completed: {len(final_pred)} predictions generated")
+                
+            except Exception as e:
+                print(f"Technical strategy error: {str(e)}")
+                # Fallback to simple moving average prediction
+                print("Falling back to simple moving average prediction...")
+                try:
+                    last_price = df['Close'].iloc[-1]
+                    volatility = df['Volatility'].iloc[-1]
+                    
+                    final_pred = np.array([last_price * (1 + 0.001 * i) for i in range(1, prediction_days + 1)])
+                    final_uncertainty = np.array([volatility * last_price * np.sqrt(i) for i in range(1, prediction_days + 1)])
+                    
+                    volume_pred = None
+                    volume_uncertainty = None
+                    ensemble_pred = np.array([])
+                    ensemble_uncertainty = np.array([])
+                    
+                except Exception as fallback_error:
+                    print(f"Fallback prediction error: {str(fallback_error)}")
+                    raise
         
-        # Create prediction dates based on timeframe
+        else:
+            raise ValueError(f"Unknown strategy: {strategy}. Supported strategies: 'chronos', 'technical'")
+        
+        # Create prediction dates
         last_date = df.index[-1]
         if timeframe == "1d":
             pred_dates = pd.date_range(start=last_date + timedelta(days=1), periods=prediction_days)
@@ -1138,80 +1515,163 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
         else:  # 15m
             pred_dates = pd.date_range(start=last_date + timedelta(minutes=15), periods=prediction_days * 96)
         
-        # Create visualization
-        fig = make_subplots(rows=3, cols=1, 
+        # Create enhanced visualization
+        fig = make_subplots(rows=4, cols=1, 
                            shared_xaxes=True,
                            vertical_spacing=0.05,
-                           subplot_titles=('Price Prediction', 'Technical Indicators', 'Volume'))
+                           subplot_titles=('Price Prediction', 'Technical Indicators', 'Volume', 'Uncertainty Analysis'))
         
         # Add historical price
         fig.add_trace(
             go.Scatter(x=df.index, y=df['Close'], name='Historical Price',
-                      line=dict(color='blue')),
+                      line=dict(color='blue', width=2)),
             row=1, col=1
         )
         
-        # Add prediction mean
+        # Add predicted price with uncertainty bands
         fig.add_trace(
-            go.Scatter(x=pred_dates, y=mean_pred, name='Predicted Price',
-                      line=dict(color='red')),
+            go.Scatter(x=pred_dates, y=final_pred, name='Predicted Price',
+                      line=dict(color='red', width=2)),
             row=1, col=1
         )
         
-        # Add confidence intervals
+        # Add uncertainty bands
+        upper_band = final_pred + 2 * final_uncertainty
+        lower_band = final_pred - 2 * final_uncertainty
+        
         fig.add_trace(
-            go.Scatter(x=pred_dates, y=mean_pred + 1.96 * std_pred,
-                      fill=None, mode='lines', line_color='rgba(255,0,0,0.2)',
-                      name='Upper Bound'),
+            go.Scatter(x=pred_dates, y=upper_band, name='Upper Bound (95%)',
+                      line=dict(color='red', width=1, dash='dash'), showlegend=False),
             row=1, col=1
         )
+        
         fig.add_trace(
-            go.Scatter(x=pred_dates, y=mean_pred - 1.96 * std_pred,
-                      fill='tonexty', mode='lines', line_color='rgba(255,0,0,0.2)',
-                      name='Lower Bound'),
+            go.Scatter(x=pred_dates, y=lower_band, name='Lower Bound (95%)',
+                      line=dict(color='red', width=1, dash='dash'), fill='tonexty',
+                      fillcolor='rgba(255,0,0,0.1)', showlegend=False),
             row=1, col=1
         )
         
         # Add technical indicators
         fig.add_trace(
-            go.Scatter(x=df.index, y=df['RSI'], name='RSI',
-                      line=dict(color='purple')),
-            row=2, col=1
-        )
-        fig.add_trace(
-            go.Scatter(x=df.index, y=df['MACD'], name='MACD',
-                      line=dict(color='orange')),
-            row=2, col=1
-        )
-        fig.add_trace(
-            go.Scatter(x=df.index, y=df['MACD_Signal'], name='MACD Signal',
-                      line=dict(color='green')),
+            go.Scatter(x=df.index, y=df['RSI'], name='RSI (Historical)',
+                      line=dict(color='purple', width=1)),
             row=2, col=1
         )
         
-        # Add predicted technical indicators if available
-        if rsi_pred is not None:
+        # Add predicted RSI if available
+        if 'RSI' in technical_predictions:
             fig.add_trace(
-                go.Scatter(x=pred_dates, y=rsi_pred, name='Predicted RSI',
-                          line=dict(color='purple', dash='dash')),
+                go.Scatter(x=pred_dates, y=technical_predictions['RSI'], name='RSI (Predicted)',
+                          line=dict(color='purple', width=2, dash='dash')),
                 row=2, col=1
             )
+            
+            # Add RSI uncertainty bands
+            if 'RSI' in technical_uncertainties:
+                rsi_upper = technical_predictions['RSI'] + 2 * technical_uncertainties['RSI']
+                rsi_lower = technical_predictions['RSI'] - 2 * technical_uncertainties['RSI']
+                
+                fig.add_trace(
+                    go.Scatter(x=pred_dates, y=rsi_upper, name='RSI Upper Bound',
+                              line=dict(color='purple', width=1, dash='dot'), showlegend=False),
+                    row=2, col=1
+                )
+                
+                fig.add_trace(
+                    go.Scatter(x=pred_dates, y=rsi_lower, name='RSI Lower Bound',
+                              line=dict(color='purple', width=1, dash='dot'), fill='tonexty',
+                              fillcolor='rgba(128,0,128,0.1)', showlegend=False),
+                    row=2, col=1
+                )
         
-        if macd_pred is not None:
+        fig.add_trace(
+            go.Scatter(x=df.index, y=df['MACD'], name='MACD (Historical)',
+                      line=dict(color='orange', width=1)),
+            row=2, col=1
+        )
+        
+        # Add predicted MACD if available
+        if 'MACD' in technical_predictions:
             fig.add_trace(
-                go.Scatter(x=pred_dates, y=macd_pred, name='Predicted MACD',
-                          line=dict(color='orange', dash='dash')),
+                go.Scatter(x=pred_dates, y=technical_predictions['MACD'], name='MACD (Predicted)',
+                          line=dict(color='orange', width=2, dash='dash')),
                 row=2, col=1
             )
+            
+            # Add MACD signal line if available
+            if 'MACD_Signal' in technical_predictions:
+                fig.add_trace(
+                    go.Scatter(x=pred_dates, y=technical_predictions['MACD_Signal'], name='MACD Signal (Predicted)',
+                              line=dict(color='red', width=1, dash='dash')),
+                    row=2, col=1
+                )
+            
+            # Add MACD uncertainty bands
+            if 'MACD' in technical_uncertainties:
+                macd_upper = technical_predictions['MACD'] + 2 * technical_uncertainties['MACD']
+                macd_lower = technical_predictions['MACD'] - 2 * technical_uncertainties['MACD']
+                
+                fig.add_trace(
+                    go.Scatter(x=pred_dates, y=macd_upper, name='MACD Upper Bound',
+                              line=dict(color='orange', width=1, dash='dot'), showlegend=False),
+                    row=2, col=1
+                )
+                
+                fig.add_trace(
+                    go.Scatter(x=pred_dates, y=macd_lower, name='MACD Lower Bound',
+                              line=dict(color='orange', width=1, dash='dot'), fill='tonexty',
+                              fillcolor='rgba(255,165,0,0.1)', showlegend=False),
+                    row=2, col=1
+                )
+        
+        # Add Bollinger Bands if available
+        if 'BB_Upper' in df.columns and 'BB_Middle' in df.columns and 'BB_Lower' in df.columns:
+            fig.add_trace(
+                go.Scatter(x=df.index, y=df['BB_Upper'], name='BB Upper (Historical)',
+                          line=dict(color='gray', width=1, dash='dash')),
+                row=1, col=1
+            )
+            
+            fig.add_trace(
+                go.Scatter(x=df.index, y=df['BB_Middle'], name='BB Middle (Historical)',
+                          line=dict(color='gray', width=1)),
+                row=1, col=1
+            )
+            
+            fig.add_trace(
+                go.Scatter(x=df.index, y=df['BB_Lower'], name='BB Lower (Historical)',
+                          line=dict(color='gray', width=1, dash='dash')),
+                row=1, col=1
+            )
+            
+            # Add predicted Bollinger Bands if available
+            if 'BB_Upper' in technical_predictions:
+                fig.add_trace(
+                    go.Scatter(x=pred_dates, y=technical_predictions['BB_Upper'], name='BB Upper (Predicted)',
+                              line=dict(color='darkgray', width=2, dash='dash')),
+                    row=1, col=1
+                )
+                
+                fig.add_trace(
+                    go.Scatter(x=pred_dates, y=technical_predictions['BB_Middle'], name='BB Middle (Predicted)',
+                              line=dict(color='darkgray', width=2)),
+                    row=1, col=1
+                )
+                
+                fig.add_trace(
+                    go.Scatter(x=pred_dates, y=technical_predictions['BB_Lower'], name='BB Lower (Predicted)',
+                              line=dict(color='darkgray', width=2, dash='dash')),
+                    row=1, col=1
+                )
         
         # Add volume
         fig.add_trace(
-            go.Bar(x=df.index, y=df['Volume'], name='Volume',
-                  marker_color='gray'),
+            go.Bar(x=df.index, y=df['Volume'], name='Historical Volume',
+                  marker_color='lightblue', opacity=0.7),
             row=3, col=1
         )
         
-        # Add predicted volume if available
         if volume_pred is not None:
             fig.add_trace(
                 go.Bar(x=pred_dates, y=volume_pred, name='Predicted Volume',
@@ -1219,100 +1679,45 @@ def make_prediction(symbol: str, timeframe: str = "1d", prediction_days: int = 5
                 row=3, col=1
             )
         
-        # Update layout with timeframe-specific settings
+        # Add uncertainty analysis
+        fig.add_trace(
+            go.Scatter(x=pred_dates, y=final_uncertainty, name='Prediction Uncertainty',
+                      line=dict(color='green', width=2)),
+            row=4, col=1
+        )
+        
+        # Update layout
         fig.update_layout(
-            title=f'{symbol} {timeframe} Analysis and Prediction',
+            title=f'Enhanced Stock Prediction for {symbol}',
             xaxis_title='Date',
-            yaxis_title='Price',
-            height=1000,
+            height=800,
             showlegend=True
         )
         
-        # Calculate trading signals
-        signals = calculate_trading_signals(df)
+        # Create comprehensive trading signals
+        trading_signals = {
+            'prediction': {
+                'dates': pred_dates.tolist(),
+                'prices': final_pred.tolist(),
+                'uncertainty': final_uncertainty.tolist(),
+                'volume': volume_pred.tolist() if volume_pred is not None else None
+            },
+            'technical_indicators': {
+                'predictions': {k: v.tolist() for k, v in technical_predictions.items()},
+                'uncertainties': {k: v.tolist() for k, v in technical_uncertainties.items()}
+            },
+            'advanced_uncertainties': advanced_uncertainties,
+            'regime_info': regime_info,
+            'sentiment_data': sentiment_data,
+            'market_conditions': market_conditions,
+            'covariate_data_available': len(covariate_data) > 0
+        }
         
-        # Add prediction information to signals
-        signals.update({
-            "symbol": symbol,
-            "timeframe": timeframe,
-            "prediction": mean_pred.tolist(),
-            "confidence": std_pred.tolist(),
-            "dates": pred_dates.strftime('%Y-%m-%d %H:%M:%S').tolist(),
-            "strategy_used": strategy
-        })
-        
-        # Add predicted indicators to signals if available
-        if volume_pred is not None:
-            signals["predicted_volume"] = volume_pred.tolist()
-        if rsi_pred is not None:
-            signals["predicted_rsi"] = rsi_pred.tolist()
-        if macd_pred is not None:
-            signals["predicted_macd"] = macd_pred.tolist()
-        
-        # Implement advanced features
-        # 1. Market Regime Detection
-        if use_regime_detection:
-            try:
-                returns = df['Returns'].dropna()
-                regime_info = detect_market_regime(returns)
-                signals["regime_info"] = regime_info
-            except Exception as e:
-                print(f"Regime detection error: {str(e)}")
-                signals["regime_info"] = {"error": str(e)}
-        
-        # 2. Advanced Trading Signals with Regime Awareness
-        try:
-            regime_info = signals.get("regime_info", {})
-            advanced_signals = advanced_trading_signals(df, regime_info)
-            signals["advanced_signals"] = advanced_signals
-        except Exception as e:
-            print(f"Advanced trading signals error: {str(e)}")
-            signals["advanced_signals"] = {"error": str(e)}
-        
-        # 3. Stress Testing
-        if use_stress_testing:
-            try:
-                stress_results = stress_test_scenarios(df, mean_pred)
-                signals["stress_test_results"] = stress_results
-            except Exception as e:
-                print(f"Stress testing error: {str(e)}")
-                signals["stress_test_results"] = {"error": str(e)}
-        
-        # 4. Ensemble Methods
-        if use_ensemble and ensemble_weights:
-            try:
-                ensemble_mean, ensemble_uncertainty = create_ensemble_prediction(
-                    df, prediction_days, ensemble_weights
-                )
-                if len(ensemble_mean) > 0:
-                    signals["ensemble_used"] = True
-                    signals["ensemble_prediction"] = ensemble_mean.tolist()
-                    signals["ensemble_uncertainty"] = ensemble_uncertainty.tolist()
-                    # Update the main prediction with ensemble if available
-                    if len(ensemble_mean) == len(mean_pred):
-                        mean_pred = ensemble_mean
-                        std_pred = ensemble_uncertainty
-                else:
-                    signals["ensemble_used"] = False
-            except Exception as e:
-                print(f"Ensemble prediction error: {str(e)}")
-                signals["ensemble_used"] = False
-                signals["ensemble_error"] = str(e)
-        
-        # 5. Enhanced Uncertainty Quantification
-        try:
-            if 'quantiles' in locals():
-                skewed_uncertainty = calculate_skewed_uncertainty(quantiles)
-                signals["skewed_uncertainty"] = skewed_uncertainty.tolist()
-        except Exception as e:
-            print(f"Skewed uncertainty calculation error: {str(e)}")
-        
-        return signals, fig
+        return trading_signals, fig
         
     except Exception as e:
-        raise Exception(f"Prediction error: {str(e)}")
-    finally:
-        clear_gpu_memory()
+        print(f"Enhanced prediction error: {str(e)}")
+        raise
 
 def calculate_trading_signals(df: pd.DataFrame) -> Dict:
     """Calculate trading signals based on technical indicators"""
@@ -2235,13 +2640,50 @@ def create_interface():
         gr.Markdown("# Advanced Stock Prediction Analysis")
         gr.Markdown("Analyze stocks with advanced features including regime detection, ensemble methods, and stress testing.")
         
-        # Add market status message
-        market_status = "Market is currently closed" if not is_market_open() else "Market is currently open"
-        next_trading_day = get_next_trading_day()
-        gr.Markdown(f"""
-        ### Market Status: {market_status}
-        Next trading day: {next_trading_day.strftime('%Y-%m-%d')}
-        """)
+        # Add market status message with periodic updates
+        market_status_display = gr.Markdown(
+            value=get_market_status_display(),
+            every=600,  # Update every 10 minutes (600 seconds)
+            fn=update_market_status
+        )
+        
+        # Add enhanced market information section
+        with gr.Accordion("🌍 Global Market Information", open=False):
+            with gr.Row():
+                with gr.Column():
+                    gr.Markdown("### Market Summary")
+                    market_summary_display = gr.JSON(label="Market Summary", value={})
+                    
+                    def update_market_summary():
+                        """Update market summary with enhanced yfinance data"""
+                        return get_enhanced_market_summary()
+                    
+                    update_market_summary_btn = gr.Button("🔄 Update Market Summary")
+                    update_market_summary_btn.click(
+                        fn=update_market_summary,
+                        outputs=[market_summary_display]
+                    )
+                
+                with gr.Column():
+                    gr.Markdown("### Market Types Supported")
+                    gr.Markdown("""
+                    **📈 Stock Markets:**
+                    - **US Stocks** (NYSE, NASDAQ, AMEX): 9:30 AM - 4:00 PM ET
+                    - **European Markets** (London, Frankfurt, Paris): 8:00 AM - 4:30 PM GMT
+                    - **Asian Markets** (Tokyo, Hong Kong, Shanghai): 9:00 AM - 3:30 PM JST
+                    
+                    **📊 24/7 Markets:**
+                    - **Forex** (Global Currency Exchange): 24/7 trading
+                    - **Cryptocurrency** (Bitcoin, Ethereum, Altcoins): 24/7 trading
+                    - **US Futures** (CME, ICE, CBOT): 24/7 trading
+                    - **Commodities** (Gold, Silver, Oil, Natural Gas): 24/7 trading
+                    
+                    **💡 Features:**
+                    - Real-time market status updates every 10 minutes
+                    - Timezone-aware calculations
+                    - Market-specific trading hours
+                    - Enhanced data from yfinance API
+                    """)
         
         # Advanced Settings Accordion
         with gr.Accordion("Advanced Settings", open=False):
@@ -2250,6 +2692,10 @@ def create_interface():
                     use_ensemble = gr.Checkbox(label="Use Ensemble Methods", value=True)
                     use_regime_detection = gr.Checkbox(label="Use Regime Detection", value=True)
                     use_stress_testing = gr.Checkbox(label="Use Stress Testing", value=True)
+                    use_covariates = gr.Checkbox(label="Use Enhanced Covariate Data", value=True, 
+                                               info="Include market indices, sectors, and economic indicators")
+                    use_sentiment = gr.Checkbox(label="Use Sentiment Analysis", value=True,
+                                              info="Include news sentiment analysis")
                     use_smoothing = gr.Checkbox(label="Use Smoothing", value=True)
                     smoothing_type = gr.Dropdown(
                         choices=["exponential", "moving_average", "kalman", "savitzky_golay", 
@@ -2325,6 +2771,18 @@ def create_interface():
                         step=0.1,
                         label="Statistical Weight"
                     )
+                    
+                    gr.Markdown("### Enhanced Features")
+                    gr.Markdown("""
+                    **New Enhanced Features:**
+                    - **Covariate Data**: Market indices, sector ETFs, commodities, currencies
+                    - **Sentiment Analysis**: News sentiment scoring and confidence
+                    - **Advanced Uncertainty**: Multiple uncertainty calculation methods
+                    - **Enhanced Volume Prediction**: Price-volume relationship modeling
+                    - **Regime-Aware Uncertainty**: Market condition adjustments
+                    - **Multi-Algorithm Ensemble**: Random Forest, Gradient Boosting, SVR, Neural Networks
+                    - **Real-Time Market Status**: Updates every 10 minutes with detailed timing information
+                    """)
         
         with gr.Tabs() as tabs:
             # Daily Analysis Tab
@@ -2531,7 +2989,8 @@ def create_interface():
         def analyze_stock(symbol, timeframe, prediction_days, lookback_days, strategy,
                          use_ensemble, use_regime_detection, use_stress_testing,
                          risk_free_rate, market_index, chronos_weight, technical_weight, statistical_weight,
-                         random_real_points, use_smoothing, smoothing_type, smoothing_window, smoothing_alpha):
+                         random_real_points, use_smoothing, smoothing_type, smoothing_window, smoothing_alpha,
+                         use_covariates=True, use_sentiment=True):
             try:
                 # Create ensemble weights
                 ensemble_weights = {
@@ -2544,8 +3003,8 @@ def create_interface():
                 market_df = get_market_data(market_index, lookback_days)
                 market_returns = market_df['Returns'] if not market_df.empty else None
                 
-                # Make prediction with advanced features
-                signals, fig = make_prediction(
+                # Make prediction with enhanced features
+                signals, fig = make_prediction_enhanced(
                     symbol=symbol,
                     timeframe=timeframe,
                     prediction_days=prediction_days,
@@ -2556,6 +3015,8 @@ def create_interface():
                     risk_free_rate=risk_free_rate,
                     ensemble_weights=ensemble_weights,
                     market_index=market_index,
+                    use_covariates=use_covariates,
+                    use_sentiment=use_sentiment,
                     random_real_points=random_real_points,
                     use_smoothing=use_smoothing,
                     smoothing_type=smoothing_type,
@@ -2596,6 +3057,15 @@ def create_interface():
                     "Net_Margin": df['Net_Margin'].iloc[-1]
                 }
                 
+                # Add enhanced features information
+                enhanced_metrics = {
+                    "covariate_data_used": signals.get("covariate_data_available", False),
+                    "sentiment_analysis_used": use_sentiment,
+                    "advanced_uncertainty_methods": list(signals.get("advanced_uncertainties", {}).keys()),
+                    "regime_aware_uncertainty": use_regime_detection,
+                    "enhanced_volume_prediction": signals.get("prediction", {}).get("volume") is not None
+                }
+                
                 # Add intraday-specific metrics for shorter timeframes
                 if timeframe in ["1h", "15m"]:
                     intraday_metrics = {
@@ -2612,7 +3082,8 @@ def create_interface():
                 stress_results = signals.get("stress_test_results", {})
                 ensemble_metrics = {
                     "ensemble_used": signals.get("ensemble_used", False),
-                    "ensemble_weights": ensemble_weights
+                    "ensemble_weights": ensemble_weights,
+                    "enhanced_features": enhanced_metrics
                 }
                 
                 # Separate basic and advanced signals
@@ -2643,59 +3114,73 @@ def create_interface():
         # Daily analysis button click
         def daily_analysis(s: str, pd: int, ld: int, st: str, ue: bool, urd: bool, ust: bool,
                           rfr: float, mi: str, cw: float, tw: float, sw: float,
-                          rrp: int, usm: bool, smt: str, sww: float, sa: float) -> Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict]:
+                          rrp: int, usm: bool, smt: str, sww: float, sa: float,
+                          uc: bool, us: bool) -> Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict]:
             """
-            Process daily timeframe stock analysis with advanced features.
+            Process daily timeframe stock analysis with enhanced features.
 
             This function performs comprehensive stock analysis using daily data with support for
-            multiple prediction strategies, ensemble methods, regime detection, and stress testing.
-            It's designed for medium to long-term investment analysis with up to 365 days of prediction.
+            multiple prediction strategies, ensemble methods, regime detection, stress testing,
+            covariate data, and sentiment analysis. It's designed for medium to long-term investment 
+            analysis with up to 365 days of prediction.
 
             Args:
-                s (str): Stock symbol (e.g., "AAPL", "MSFT", "GOOGL", "TSLA")
-                    Must be a valid stock symbol available on Yahoo Finance
-                pd (int): Number of days to predict (1-365)
-                    The forecast horizon for the analysis. Longer periods may have higher uncertainty
-                ld (int): Historical lookback period in days (1-3650)
-                    Amount of historical data to use for analysis. More data generally improves accuracy
-                st (str): Prediction strategy to use ("chronos" or "technical")
-                    - "chronos": Uses Amazon's Chronos T5 model for time series forecasting
-                    - "technical": Uses traditional technical analysis indicators
-                ue (bool): Use ensemble methods
+                s (str): Stock Symbol (e.g., AAPL) - The input value from the "Stock Symbol" Textbox component
+                pd (int): Days to Predict - The input value from the "Days to Predict" Slider component (1-365)
+                ld (int): Historical Lookback (Days) - The input value from the "Historical Lookback (Days)" Slider component (1-3650)
+                st (str): Prediction Strategy - The input value from the "Prediction Strategy" Dropdown component
+                    Options: "chronos" (uses Amazon's Chronos T5 model) or "technical" (traditional technical analysis)
+                ue (bool): Use Ensemble Methods - The input value from the "Use Ensemble Methods" Checkbox component
                     When True, combines multiple prediction models for improved accuracy
-                urd (bool): Use regime detection
+                urd (bool): Use Regime Detection - The input value from the "Use Regime Detection" Checkbox component
                     When True, detects market regimes (bull/bear/sideways) to adjust predictions
-                ust (bool): Use stress testing
+                ust (bool): Use Stress Testing - The input value from the "Use Stress Testing" Checkbox component
                     When True, performs scenario analysis under various market conditions
-                rfr (float): Risk-free rate (0.0-0.1)
+                rfr (float): Risk-Free Rate (Annual) - The input value from the "Risk-Free Rate (Annual)" Slider component (0.0-0.1)
                     Annual risk-free rate used for risk-adjusted return calculations
-                mi (str): Market index for correlation analysis
+                mi (str): Market Index for Correlation - The input value from the "Market Index for Correlation" Dropdown component
                     Options: "^GSPC" (S&P 500), "^DJI" (Dow Jones), "^IXIC" (NASDAQ), "^RUT" (Russell 2000)
-                cw (float): Chronos weight in ensemble (0.0-1.0)
+                cw (float): Chronos Weight - The input value from the "Chronos Weight" Slider component (0.0-1.0)
                     Weight given to Chronos model predictions in ensemble methods
-                tw (float): Technical weight in ensemble (0.0-1.0)
+                tw (float): Technical Weight - The input value from the "Technical Weight" Slider component (0.0-1.0)
                     Weight given to technical analysis predictions in ensemble methods
-                sw (float): Statistical weight in ensemble (0.0-1.0)
+                sw (float): Statistical Weight - The input value from the "Statistical Weight" Slider component (0.0-1.0)
                     Weight given to statistical model predictions in ensemble methods
-                rrp (int): Number of random real points to include in long-horizon context
-                usm (bool): Use smoothing
+                rrp (int): Random Real Points in Long-Horizon Context - The input value from the "Random Real Points in Long-Horizon Context" Slider component
+                    Number of random real points to include in long-horizon context for improved predictions
+                usm (bool): Use Smoothing - The input value from the "Use Smoothing" Checkbox component
                     When True, applies smoothing to predictions to reduce noise and improve continuity
-                smt (str): Smoothing type to use
+                smt (str): Smoothing Type - The input value from the "Smoothing Type" Dropdown component
                     Options: "exponential", "moving_average", "kalman", "savitzky_golay", "double_exponential", "triple_exponential", "adaptive", "none"
-                sww (float): Smoothing window size for moving average and Savitzky-Golay
-                sa (float): Smoothing alpha for exponential methods (0.1-0.9)
+                sww (float): Smoothing Window Size - The input value from the "Smoothing Window Size" Slider component
+                    Window size for moving average and Savitzky-Golay smoothing methods
+                sa (float): Smoothing Alpha - The input value from the "Smoothing Alpha" Slider component (0.1-0.9)
+                    Alpha parameter for exponential smoothing methods
+                uc (bool): Use Enhanced Covariate Data - The input value from the "Use Enhanced Covariate Data" Checkbox component
+                    When True, includes market indices, sectors, and economic indicators in analysis
+                us (bool): Use Sentiment Analysis - The input value from the "Use Sentiment Analysis" Checkbox component
+                    When True, includes news sentiment analysis in the prediction model
 
             Returns:
                 Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict]: Analysis results containing:
-                    - Dict: Basic trading signals (RSI, MACD, Bollinger Bands, SMA, Overall)
-                    - go.Figure: Interactive plot with historical data, predictions, and confidence intervals
-                    - Dict: Structured product metrics (Market Cap, P/E ratios, financial ratios)
-                    - Dict: Advanced risk metrics (Sharpe ratio, VaR, drawdown, correlation)
-                    - Dict: Sector and industry analysis metrics
-                    - Dict: Market regime detection results
-                    - Dict: Stress testing scenario results
-                    - Dict: Ensemble method configuration and results
-                    - Dict: Advanced trading signals with confidence levels
+                    [0] Dict: Trading Signals - Output value for the "Trading Signals" Json component
+                        Contains RSI, MACD, Bollinger Bands, SMA, and overall trading signals
+                    [1] go.Figure: Analysis and Prediction - Output value for the "Analysis and Prediction" Plot component
+                        Interactive plot with historical data, predictions, and confidence intervals
+                    [2] Dict: Product Metrics - Output value for the "Product Metrics" Json component
+                        Structured product metrics including Market Cap, P/E ratios, and financial ratios
+                    [3] Dict: Risk Metrics - Output value for the "Risk Metrics" Json component
+                        Advanced risk metrics including Sharpe ratio, VaR, drawdown, and correlation analysis
+                    [4] Dict: Sector Metrics - Output value for the "Sector Metrics" Json component
+                        Sector and industry analysis metrics
+                    [5] Dict: Regime Metrics - Output value for the "Regime Metrics" Json component
+                        Market regime detection results and analysis
+                    [6] Dict: Stress Test Results - Output value for the "Stress Test Results" Json component
+                        Stress testing scenario results under various market conditions
+                    [7] Dict: Ensemble Metrics - Output value for the "Ensemble Metrics" Json component
+                        Ensemble method configuration and performance results
+                    [8] Dict: Advanced Trading Signals - Output value for the "Advanced Trading Signals" Json component
+                        Advanced trading signals with confidence levels and sophisticated indicators
 
             Raises:
                 gr.Error: If data cannot be fetched, insufficient data points, or other analysis errors
@@ -2703,25 +3188,28 @@ def create_interface():
 
             Example:
                 >>> signals, plot, metrics, risk, sector, regime, stress, ensemble, advanced = daily_analysis(
-                ...     "AAPL", 30, 365, "chronos", True, True, True, 0.02, "^GSPC", 0.6, 0.2, 0.2, 4, True, "exponential", 5, 0.3
+                ...     "AAPL", 30, 365, "chronos", True, True, True, 0.02, "^GSPC", 0.6, 0.2, 0.2, 4, True, "exponential", 5, 0.3, True, True
                 ... )
 
             Notes:
                 - Daily analysis is available 24/7 regardless of market hours
                 - Maximum prediction period is 365 days
                 - Historical data can go back up to 10 years (3650 days)
-                - Ensemble weights should sum to 1.0 for optimal results
+                - Ensemble weights (cw + tw + sw) should sum to 1.0 for optimal results
                 - Risk-free rate is typically between 0.02-0.05 (2-5% annually)
                 - Smoothing helps reduce prediction noise but may reduce responsiveness to sudden changes
+                - Enhanced covariate data includes market indices, sector ETFs, commodities, and currencies
+                - Sentiment analysis provides news sentiment scoring and confidence levels
             """
-            return analyze_stock(s, "1d", pd, ld, st, ue, urd, ust, rfr, mi, cw, tw, sw, rrp, usm, smt, sww, sa)
+            return analyze_stock(s, "1d", pd, ld, st, ue, urd, ust, rfr, mi, cw, tw, sw, rrp, usm, smt, sww, sa, uc, us)
 
         daily_predict_btn.click(
             fn=daily_analysis,
             inputs=[daily_symbol, daily_prediction_days, daily_lookback_days, daily_strategy,
                    use_ensemble, use_regime_detection, use_stress_testing, risk_free_rate, market_index,
                    chronos_weight, technical_weight, statistical_weight,
-                   random_real_points, use_smoothing, smoothing_type, smoothing_window, smoothing_alpha],
+                   random_real_points, use_smoothing, smoothing_type, smoothing_window, smoothing_alpha,
+                   use_covariates, use_sentiment],
             outputs=[daily_signals, daily_plot, daily_metrics, daily_risk_metrics, daily_sector_metrics,
                     daily_regime_metrics, daily_stress_results, daily_ensemble_metrics, daily_signals_advanced]
         )
@@ -2729,59 +3217,75 @@ def create_interface():
         # Hourly analysis button click
         def hourly_analysis(s: str, pd: int, ld: int, st: str, ue: bool, urd: bool, ust: bool,
                            rfr: float, mi: str, cw: float, tw: float, sw: float,
-                           rrp: int, usm: bool, smt: str, sww: float, sa: float) -> Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict]:
+                           rrp: int, usm: bool, smt: str, sww: float, sa: float,
+                           uc: bool, us: bool) -> Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict]:
             """
-            Process hourly timeframe stock analysis with advanced features.
+            Process hourly timeframe stock analysis with enhanced features.
 
             This function performs high-frequency stock analysis using hourly data, ideal for
             short to medium-term trading strategies. It includes intraday volatility analysis,
-            volume-price trends, and momentum indicators optimized for hourly timeframes.
+            volume-price trends, momentum indicators, covariate data, and sentiment analysis
+            optimized for hourly timeframes.
 
             Args:
-                s (str): Stock symbol (e.g., "AAPL", "MSFT", "GOOGL", "TSLA")
-                    Must be a valid stock symbol with sufficient liquidity for hourly analysis
-                pd (int): Number of days to predict (1-7)
+                s (str): Stock Symbol (e.g., AAPL) - The input value from the "Stock Symbol" Textbox component
+                pd (int): Days to Predict - The input value from the "Days to Predict" Slider component (1-7)
                     Limited to 7 days due to Yahoo Finance hourly data constraints
-                ld (int): Historical lookback period in days (1-60)
+                ld (int): Historical Lookback (Days) - The input value from the "Historical Lookback (Days)" Slider component (1-60)
                     Enhanced to 60 days for hourly data (vs standard 30 days)
-                st (str): Prediction strategy to use ("chronos" or "technical")
-                    - "chronos": Uses Amazon's Chronos T5 model optimized for hourly data
-                    - "technical": Uses technical indicators adjusted for hourly timeframes
-                ue (bool): Use ensemble methods
+                st (str): Prediction Strategy - The input value from the "Prediction Strategy" Dropdown component
+                    Options: "chronos" (uses Amazon's Chronos T5 model optimized for hourly data) or "technical" (technical indicators adjusted for hourly timeframes)
+                ue (bool): Use Ensemble Methods - The input value from the "Use Ensemble Methods" Checkbox component
                     Combines multiple models for improved short-term prediction accuracy
-                urd (bool): Use regime detection
+                urd (bool): Use Regime Detection - The input value from the "Use Regime Detection" Checkbox component
                     Detects intraday market regimes and volatility patterns
-                ust (bool): Use stress testing
+                ust (bool): Use Stress Testing - The input value from the "Use Stress Testing" Checkbox component
                     Performs scenario analysis for short-term market shocks
-                rfr (float): Risk-free rate (0.0-0.1)
+                rfr (float): Risk-Free Rate (Annual) - The input value from the "Risk-Free Rate (Annual)" Slider component (0.0-0.1)
                     Annual risk-free rate for risk-adjusted calculations
-                mi (str): Market index for correlation analysis
+                mi (str): Market Index for Correlation - The input value from the "Market Index for Correlation" Dropdown component
                     Options: "^GSPC" (S&P 500), "^DJI" (Dow Jones), "^IXIC" (NASDAQ), "^RUT" (Russell 2000)
-                cw (float): Chronos weight in ensemble (0.0-1.0)
+                cw (float): Chronos Weight - The input value from the "Chronos Weight" Slider component (0.0-1.0)
                     Weight for Chronos model in ensemble predictions
-                tw (float): Technical weight in ensemble (0.0-1.0)
+                tw (float): Technical Weight - The input value from the "Technical Weight" Slider component (0.0-1.0)
                     Weight for technical analysis in ensemble predictions
-                sw (float): Statistical weight in ensemble (0.0-1.0)
+                sw (float): Statistical Weight - The input value from the "Statistical Weight" Slider component (0.0-1.0)
                     Weight for statistical models in ensemble predictions
-                rrp (int): Number of random real points to include in long-horizon context
-                usm (bool): Use smoothing
+                rrp (int): Random Real Points in Long-Horizon Context - The input value from the "Random Real Points in Long-Horizon Context" Slider component
+                    Number of random real points to include in long-horizon context for improved predictions
+                usm (bool): Use Smoothing - The input value from the "Use Smoothing" Checkbox component
                     When True, applies smoothing to predictions to reduce noise and improve continuity
-                smt (str): Smoothing type to use
+                smt (str): Smoothing Type - The input value from the "Smoothing Type" Dropdown component
                     Options: "exponential", "moving_average", "kalman", "savitzky_golay", "double_exponential", "triple_exponential", "adaptive", "none"
-                sww (float): Smoothing window size for moving average and Savitzky-Golay
-                sa (float): Smoothing alpha for exponential methods (0.1-0.9)
+                sww (float): Smoothing Window Size - The input value from the "Smoothing Window Size" Slider component
+                    Window size for moving average and Savitzky-Golay smoothing methods
+                sa (float): Smoothing Alpha - The input value from the "Smoothing Alpha" Slider component (0.1-0.9)
+                    Alpha parameter for exponential smoothing methods
+                uc (bool): Use Enhanced Covariate Data - The input value from the "Use Enhanced Covariate Data" Checkbox component
+                    When True, includes market indices, sectors, and economic indicators in analysis
+                us (bool): Use Sentiment Analysis - The input value from the "Use Sentiment Analysis" Checkbox component
+                    When True, includes news sentiment analysis in the prediction model
 
             Returns:
                 Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict]: Analysis results containing:
-                    - Dict: Basic trading signals optimized for hourly timeframes
-                    - go.Figure: Interactive plot with hourly data, predictions, and intraday patterns
-                    - Dict: Product metrics including intraday volatility and volume analysis
-                    - Dict: Risk metrics adjusted for hourly data frequency
-                    - Dict: Sector analysis with intraday-specific metrics
-                    - Dict: Market regime detection for hourly patterns
-                    - Dict: Stress testing results for short-term scenarios
-                    - Dict: Ensemble analysis configuration and results
-                    - Dict: Advanced signals with intraday-specific indicators
+                    [0] Dict: Trading Signals - Output value for the "Trading Signals" Json component
+                        Basic trading signals optimized for hourly timeframes
+                    [1] go.Figure: Analysis and Prediction - Output value for the "Analysis and Prediction" Plot component
+                        Interactive plot with hourly data, predictions, and intraday patterns
+                    [2] Dict: Product Metrics - Output value for the "Product Metrics" Json component
+                        Product metrics including intraday volatility and volume analysis
+                    [3] Dict: Risk Metrics - Output value for the "Risk Metrics" Json component
+                        Risk metrics adjusted for hourly data frequency
+                    [4] Dict: Sector Metrics - Output value for the "Sector Metrics" Json component
+                        Sector analysis with intraday-specific metrics
+                    [5] Dict: Regime Metrics - Output value for the "Regime Metrics" Json component
+                        Market regime detection for hourly patterns
+                    [6] Dict: Stress Test Results - Output value for the "Stress Test Results" Json component
+                        Stress testing results for short-term scenarios
+                    [7] Dict: Ensemble Metrics - Output value for the "Ensemble Metrics" Json component
+                        Ensemble analysis configuration and results
+                    [8] Dict: Advanced Trading Signals - Output value for the "Advanced Trading Signals" Json component
+                        Advanced signals with intraday-specific indicators
 
             Raises:
                 gr.Error: If market is closed, insufficient data, or analysis errors
@@ -2789,7 +3293,7 @@ def create_interface():
 
             Example:
                 >>> signals, plot, metrics, risk, sector, regime, stress, ensemble, advanced = hourly_analysis(
-                ...     "AAPL", 3, 14, "chronos", True, True, True, 0.02, "^GSPC", 0.6, 0.2, 0.2, 4, True, "exponential", 5, 0.3
+                ...     "AAPL", 3, 14, "chronos", True, True, True, 0.02, "^GSPC", 0.6, 0.2, 0.2, 4, True, "exponential", 5, 0.3, True, True
                 ... )
 
             Notes:
@@ -2800,15 +3304,18 @@ def create_interface():
                 - Optimized for day trading and swing trading strategies
                 - Requires high-liquidity stocks for reliable hourly analysis
                 - Smoothing helps reduce prediction noise but may reduce responsiveness to sudden changes
+                - Enhanced covariate data includes market indices, sector ETFs, commodities, and currencies
+                - Sentiment analysis provides news sentiment scoring and confidence levels
             """
-            return analyze_stock(s, "1h", pd, ld, st, ue, urd, ust, rfr, mi, cw, tw, sw, rrp, usm, smt, sww, sa)
+            return analyze_stock(s, "1h", pd, ld, st, ue, urd, ust, rfr, mi, cw, tw, sw, rrp, usm, smt, sww, sa, uc, us)
 
         hourly_predict_btn.click(
             fn=hourly_analysis,
             inputs=[hourly_symbol, hourly_prediction_days, hourly_lookback_days, hourly_strategy,
                    use_ensemble, use_regime_detection, use_stress_testing, risk_free_rate, market_index,
                    chronos_weight, technical_weight, statistical_weight,
-                   random_real_points, use_smoothing, smoothing_type, smoothing_window, smoothing_alpha],
+                   random_real_points, use_smoothing, smoothing_type, smoothing_window, smoothing_alpha,
+                   use_covariates, use_sentiment],
             outputs=[hourly_signals, hourly_plot, hourly_metrics, hourly_risk_metrics, hourly_sector_metrics,
                     hourly_regime_metrics, hourly_stress_results, hourly_ensemble_metrics, hourly_signals_advanced]
         )
@@ -2816,59 +3323,72 @@ def create_interface():
         # 15-minute analysis button click
         def min15_analysis(s: str, pd: int, ld: int, st: str, ue: bool, urd: bool, ust: bool,
                           rfr: float, mi: str, cw: float, tw: float, sw: float,
-                          rrp: int, usm: bool, smt: str, sww: float, sa: float) -> Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict]:
+                          rrp: int, usm: bool, smt: str, sww: float, sa: float,
+                          uc: bool, us: bool) -> Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict]:
             """
-            Process 15-minute timeframe stock analysis with advanced features.
+            Process 15-minute timeframe stock analysis with enhanced features.
 
-            This function performs ultra-high-frequency stock analysis using 15-minute data,
-            designed for scalping and very short-term trading strategies. It includes specialized
-            indicators for intraday patterns, volume analysis, and momentum detection.
+            This function performs ultra-high-frequency stock analysis using 15-minute data, ideal for
+            scalping and very short-term trading strategies. It includes micro-volatility analysis,
+            volume-price relationships, momentum indicators, covariate data, and sentiment analysis
+            optimized for 15-minute timeframes.
 
             Args:
-                s (str): Stock symbol (e.g., "AAPL", "MSFT", "GOOGL", "TSLA")
-                    Must be a highly liquid stock symbol suitable for high-frequency analysis
-                pd (int): Number of days to predict (1-2)
-                    Limited to 2 days due to 15-minute data granularity and model constraints
-                ld (int): Historical lookback period in days (1-7)
-                    Enhanced to 7 days for 15-minute data (vs standard 5 days)
-                st (str): Prediction strategy to use ("chronos" or "technical")
-                    - "chronos": Uses Amazon's Chronos T5 model optimized for 15-minute intervals
-                    - "technical": Uses technical indicators specifically tuned for 15-minute timeframes
-                ue (bool): Use ensemble methods
+                s (str): Stock Symbol (e.g., AAPL) - The input value from the "Stock Symbol" Textbox component
+                pd (int): Days to Predict - The input value from the "Days to Predict" Slider component (1-3)
+                    Limited to 3 days due to Yahoo Finance 15-minute data constraints
+                ld (int): Historical Lookback (Days) - The input value from the "Historical Lookback (Days)" Slider component (1-7)
+                    Limited to 7 days for 15-minute data
+                st (str): Prediction Strategy - The input value from the "Prediction Strategy" Dropdown component
+                    Options: "chronos" (uses Amazon's Chronos T5 model optimized for 15-minute data) or "technical" (technical indicators adjusted for 15-minute timeframes)
+                ue (bool): Use Ensemble Methods - The input value from the "Use Ensemble Methods" Checkbox component
                     Combines multiple models for improved ultra-short-term prediction accuracy
-                urd (bool): Use regime detection
-                    Detects micro-market regimes and volatility clustering patterns
-                ust (bool): Use stress testing
+                urd (bool): Use Regime Detection - The input value from the "Use Regime Detection" Checkbox component
+                    Detects micro-market regimes and volatility patterns
+                ust (bool): Use Stress Testing - The input value from the "Use Stress Testing" Checkbox component
+                    Performs scenario analysis for micro-market shocks
                     Performs scenario analysis for intraday market shocks and volatility spikes
-                rfr (float): Risk-free rate (0.0-0.1)
+                rfr (float): Risk-Free Rate (Annual) - The input value from the "Risk-Free Rate (Annual)" Slider component (0.0-0.1)
                     Annual risk-free rate for risk-adjusted calculations (less relevant for 15m analysis)
-                mi (str): Market index for correlation analysis
+                mi (str): Market Index for Correlation - The input value from the "Market Index for Correlation" Dropdown component
                     Options: "^GSPC" (S&P 500), "^DJI" (Dow Jones), "^IXIC" (NASDAQ), "^RUT" (Russell 2000)
-                cw (float): Chronos weight in ensemble (0.0-1.0)
+                cw (float): Chronos Weight - The input value from the "Chronos Weight" Slider component (0.0-1.0)
                     Weight for Chronos model in ensemble predictions
-                tw (float): Technical weight in ensemble (0.0-1.0)
+                tw (float): Technical Weight - The input value from the "Technical Weight" Slider component (0.0-1.0)
                     Weight for technical analysis in ensemble predictions
-                sw (float): Statistical weight in ensemble (0.0-1.0)
+                sw (float): Statistical Weight - The input value from the "Statistical Weight" Slider component (0.0-1.0)
                     Weight for statistical models in ensemble predictions
-                rrp (int): Number of random real points to include in long-horizon context
-                usm (bool): Use smoothing
+                rrp (int): Random Real Points in Long-Horizon Context - The input value from the "Random Real Points in Long-Horizon Context" Slider component
+                    Number of random real points to include in long-horizon context for improved predictions
+                usm (bool): Use Smoothing - The input value from the "Use Smoothing" Checkbox component
                     When True, applies smoothing to predictions to reduce noise and improve continuity
-                smt (str): Smoothing type to use
+                smt (str): Smoothing Type - The input value from the "Smoothing Type" Dropdown component
                     Options: "exponential", "moving_average", "kalman", "savitzky_golay", "double_exponential", "triple_exponential", "adaptive", "none"
-                sww (float): Smoothing window size for moving average and Savitzky-Golay
-                sa (float): Smoothing alpha for exponential methods (0.1-0.9)
+                sww (float): Smoothing Window Size - The input value from the "Smoothing Window Size" Slider component
+                    Window size for moving average and Savitzky-Golay smoothing methods
+                sa (float): Smoothing Alpha - The input value from the "Smoothing Alpha" Slider component (0.1-0.9)
+                    Alpha parameter for exponential smoothing methods
 
             Returns:
                 Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict]: Analysis results containing:
-                    - Dict: Basic trading signals optimized for 15-minute timeframes
-                    - go.Figure: Interactive plot with 15-minute data, predictions, and micro-patterns
-                    - Dict: Product metrics including high-frequency volatility and volume analysis
-                    - Dict: Risk metrics adjusted for 15-minute data frequency
-                    - Dict: Sector analysis with ultra-short-term metrics
-                    - Dict: Market regime detection for 15-minute patterns
-                    - Dict: Stress testing results for intraday scenarios
-                    - Dict: Ensemble analysis configuration and results
-                    - Dict: Advanced signals with 15-minute-specific indicators
+                    [0] Dict: Trading Signals - Output value for the "Trading Signals" Json component
+                        Basic trading signals optimized for 15-minute timeframes
+                    [1] go.Figure: Analysis and Prediction - Output value for the "Analysis and Prediction" Plot component
+                        Interactive plot with 15-minute data, predictions, and micro-patterns
+                    [2] Dict: Product Metrics - Output value for the "Product Metrics" Json component
+                        Product metrics including high-frequency volatility and volume analysis
+                    [3] Dict: Risk Metrics - Output value for the "Risk Metrics" Json component
+                        Risk metrics adjusted for 15-minute data frequency
+                    [4] Dict: Sector Metrics - Output value for the "Sector Metrics" Json component
+                        Sector analysis with ultra-short-term metrics
+                    [5] Dict: Regime Metrics - Output value for the "Regime Metrics" Json component
+                        Market regime detection for 15-minute patterns
+                    [6] Dict: Stress Test Results - Output value for the "Stress Test Results" Json component
+                        Stress testing results for intraday scenarios
+                    [7] Dict: Ensemble Metrics - Output value for the "Ensemble Metrics" Json component
+                        Ensemble analysis configuration and results
+                    [8] Dict: Advanced Trading Signals - Output value for the "Advanced Trading Signals" Json component
+                        Advanced signals with 15-minute-specific indicators
 
             Raises:
                 gr.Error: If market is closed, insufficient data points, or analysis errors
@@ -2904,6 +3424,571 @@ def create_interface():
     
     return demo
 
+def get_enhanced_covariate_data(symbol: str, timeframe: str = "1d", lookback_days: int = 365) -> Dict[str, pd.DataFrame]:
+    """
+    Collect enhanced covariate data including market indices, sectors, commodities, and economic indicators.
+    
+    Args:
+        symbol (str): Stock symbol
+        timeframe (str): Data timeframe
+        lookback_days (int): Number of days to look back
+    
+    Returns:
+        Dict[str, pd.DataFrame]: Dictionary of covariate dataframes
+    """
+    try:
+        covariate_data = {}
+        
+        # Calculate date range
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=lookback_days)
+        
+        # Collect market indices data
+        print("Collecting market indices data...")
+        market_data = {}
+        for index in COVARIATE_SOURCES['market_indices']:
+            try:
+                ticker = yf.Ticker(index)
+                data = retry_yfinance_request(lambda: ticker.history(
+                    start=start_date, end=end_date, interval=timeframe
+                ))
+                if not data.empty:
+                    market_data[index] = data['Close']
+            except Exception as e:
+                print(f"Error fetching {index}: {str(e)}")
+        
+        if market_data:
+            covariate_data['market_indices'] = pd.DataFrame(market_data)
+        
+        # Collect sector data
+        print("Collecting sector data...")
+        sector_data = {}
+        for sector in COVARIATE_SOURCES['sectors']:
+            try:
+                ticker = yf.Ticker(sector)
+                data = retry_yfinance_request(lambda: ticker.history(
+                    start=start_date, end=end_date, interval=timeframe
+                ))
+                if not data.empty:
+                    sector_data[sector] = data['Close']
+            except Exception as e:
+                print(f"Error fetching {sector}: {str(e)}")
+        
+        if sector_data:
+            covariate_data['sectors'] = pd.DataFrame(sector_data)
+        
+        # Collect economic indicators
+        print("Collecting economic indicators...")
+        economic_data = {}
+        for indicator, ticker_symbol in ECONOMIC_INDICATORS.items():
+            try:
+                ticker = yf.Ticker(ticker_symbol)
+                data = retry_yfinance_request(lambda: ticker.history(
+                    start=start_date, end=end_date, interval=timeframe
+                ))
+                if not data.empty:
+                    economic_data[indicator] = data['Close']
+            except Exception as e:
+                print(f"Error fetching {indicator} ({ticker_symbol}): {str(e)}")
+        
+        if economic_data:
+            covariate_data['economic_indicators'] = pd.DataFrame(economic_data)
+        
+        return covariate_data
+    
+    except Exception as e:
+        print(f"Error collecting covariate data: {str(e)}")
+        return {}
+
+def calculate_market_sentiment(symbol: str, lookback_days: int = 30) -> Dict[str, float]:
+    """
+    Calculate market sentiment using news sentiment analysis and social media data.
+    
+    Args:
+        symbol (str): Stock symbol
+        lookback_days (int): Number of days to look back
+    
+    Returns:
+        Dict[str, float]: Sentiment metrics
+    """
+    if not SENTIMENT_AVAILABLE:
+        return {'sentiment_score': 0.0, 'sentiment_confidence': 0.0}
+    
+    try:
+        sentiment_scores = []
+        
+        # Get news sentiment (simplified approach using yfinance news)
+        try:
+            ticker = yf.Ticker(symbol)
+            news = ticker.news
+            
+            if news:
+                for article in news[:10]:  # Analyze last 10 news articles
+                    title = article.get('title', '')
+                    summary = article.get('summary', '')
+                    text = f"{title} {summary}"
+                    
+                    # Calculate sentiment using TextBlob
+                    blob = TextBlob(text)
+                    sentiment_scores.append(blob.sentiment.polarity)
+        except Exception as e:
+            print(f"Error fetching news sentiment: {str(e)}")
+        
+        # Calculate average sentiment
+        if sentiment_scores:
+            avg_sentiment = np.mean(sentiment_scores)
+            sentiment_confidence = min(0.9, len(sentiment_scores) / 10.0)
+        else:
+            avg_sentiment = 0.0
+            sentiment_confidence = 0.0
+        
+        return {
+            'sentiment_score': avg_sentiment,
+            'sentiment_confidence': sentiment_confidence,
+            'sentiment_samples': len(sentiment_scores)
+        }
+    
+    except Exception as e:
+        print(f"Error calculating sentiment: {str(e)}")
+        return {'sentiment_score': 0.0, 'sentiment_confidence': 0.0}
+
+def calculate_advanced_uncertainty(quantiles: np.ndarray, historical_volatility: float, 
+                                 market_conditions: Dict = None, confidence_level: float = 0.9) -> Dict[str, np.ndarray]:
+    """
+    Calculate advanced uncertainty estimates using multiple methods.
+    
+    Args:
+        quantiles (np.ndarray): Quantile predictions from Chronos
+        historical_volatility (float): Historical volatility
+        market_conditions (Dict): Market condition indicators
+        confidence_level (float): Confidence level for uncertainty calculation
+    
+    Returns:
+        Dict[str, np.ndarray]: Multiple uncertainty estimates
+    """
+    try:
+        lower = quantiles[0, :, 0]
+        median = quantiles[0, :, 1]
+        upper = quantiles[0, :, 2]
+        
+        uncertainties = {}
+        
+        # 1. Basic quantile-based uncertainty
+        basic_uncertainty = (upper - lower) / (2 * stats.norm.ppf(confidence_level))
+        uncertainties['basic'] = basic_uncertainty
+        
+        # 2. Skewness-adjusted uncertainty
+        skewed_uncertainty = calculate_skewed_uncertainty(quantiles, confidence_level)
+        uncertainties['skewed'] = skewed_uncertainty
+        
+        # 3. Volatility-scaled uncertainty
+        volatility_scaled = basic_uncertainty * (1 + historical_volatility)
+        uncertainties['volatility_scaled'] = volatility_scaled
+        
+        # 4. Market condition adjusted uncertainty
+        if market_conditions:
+            vix_level = market_conditions.get('vix', 20.0)
+            vix_factor = vix_level / 20.0  # Normalize to typical VIX level
+            market_adjusted = basic_uncertainty * vix_factor
+            uncertainties['market_adjusted'] = market_adjusted
+        else:
+            uncertainties['market_adjusted'] = basic_uncertainty
+        
+        # 5. Time-decay uncertainty (uncertainty increases with prediction horizon)
+        time_decay = np.array([basic_uncertainty[i] * (1 + 0.1 * i) for i in range(len(basic_uncertainty))])
+        uncertainties['time_decay'] = time_decay
+        
+        # 6. Ensemble uncertainty (combine all methods)
+        ensemble_uncertainty = np.mean([
+            uncertainties['basic'],
+            uncertainties['skewed'],
+            uncertainties['volatility_scaled'],
+            uncertainties['market_adjusted'],
+            uncertainties['time_decay']
+        ], axis=0)
+        uncertainties['ensemble'] = ensemble_uncertainty
+        
+        return uncertainties
+    
+    except Exception as e:
+        print(f"Advanced uncertainty calculation error: {str(e)}")
+        # Fallback to basic calculation
+        return {'basic': (quantiles[0, :, 2] - quantiles[0, :, 0]) / (2 * 1.645)}
+
+def create_enhanced_ensemble_model(df: pd.DataFrame, covariate_data: Dict, 
+                                 prediction_days: int) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Create an enhanced ensemble model using multiple algorithms and covariate data.
+    
+    Args:
+        df (pd.DataFrame): Stock data
+        covariate_data (Dict): Covariate data
+        prediction_days (int): Number of days to predict
+    
+    Returns:
+        Tuple[np.ndarray, np.ndarray]: Ensemble predictions and uncertainties
+    """
+    if not ENSEMBLE_AVAILABLE:
+        return np.array([]), np.array([])
+    
+    try:
+        # Prepare features
+        features = []
+        target = df['Close'].values
+        
+        # Technical indicators as features
+        features.append(df['RSI'].values)
+        features.append(df['MACD'].values)
+        features.append(df['Volatility'].values)
+        
+        if 'BB_Upper' in df.columns:
+            bb_position = (df['Close'] - df['BB_Lower']) / (df['BB_Upper'] - df['BB_Lower'])
+            features.append(bb_position.values)
+        
+        # Add covariate data
+        if 'market_indices' in covariate_data:
+            for col in covariate_data['market_indices'].columns:
+                if len(covariate_data['market_indices'][col]) == len(target):
+                    features.append(covariate_data['market_indices'][col].values)
+        
+        if 'economic_indicators' in covariate_data:
+            for col in covariate_data['economic_indicators'].columns:
+                if len(covariate_data['economic_indicators'][col]) == len(target):
+                    features.append(covariate_data['economic_indicators'][col].values)
+        
+        # Create feature matrix
+        X = np.column_stack(features)
+        y = target
+        
+        # Remove any NaN values
+        mask = ~np.isnan(X).any(axis=1) & ~np.isnan(y)
+        X = X[mask]
+        y = y[mask]
+        
+        if len(X) < 50:  # Need sufficient data
+            return np.array([]), np.array([])
+        
+        # Initialize models
+        models = {
+            'random_forest': RandomForestRegressor(n_estimators=100, random_state=42),
+            'gradient_boosting': GradientBoostingRegressor(n_estimators=100, random_state=42),
+            'ridge': Ridge(alpha=1.0),
+            'lasso': Lasso(alpha=0.1),
+            'svr': SVR(kernel='rbf', C=1.0, gamma='scale'),
+            'mlp': MLPRegressor(hidden_layer_sizes=(100, 50), max_iter=500, random_state=42)
+        }
+        
+        # Train models using time series cross-validation
+        predictions = {}
+        uncertainties = {}
+        
+        for name, model in models.items():
+            try:
+                # Use expanding window for time series
+                train_size = int(0.8 * len(X))
+                X_train, X_test = X[:train_size], X[train_size:]
+                y_train, y_test = y[:train_size], y[train_size:]
+                
+                # Train model
+                model.fit(X_train, y_train)
+                
+                # Make predictions
+                if len(X_test) > 0:
+                    pred = model.predict(X_test)
+                    mse = mean_squared_error(y_test, pred)
+                    uncertainty = np.sqrt(mse) * np.ones(prediction_days)
+                else:
+                    # Use last available data for prediction
+                    pred = model.predict(X[-prediction_days:])
+                    uncertainty = np.std(y) * np.ones(prediction_days)
+                
+                predictions[name] = pred
+                uncertainties[name] = uncertainty
+                
+            except Exception as e:
+                print(f"Error training {name}: {str(e)}")
+                continue
+        
+        if not predictions:
+            return np.array([]), np.array([])
+        
+        # Combine predictions using weighted average
+        weights = {}
+        for name in predictions.keys():
+            if name in uncertainties:
+                # Weight inversely proportional to uncertainty
+                weights[name] = 1.0 / np.mean(uncertainties[name])
+        
+        # Normalize weights
+        total_weight = sum(weights.values())
+        if total_weight > 0:
+            weights = {k: v / total_weight for k, v in weights.items()}
+        else:
+            # Equal weights if all uncertainties are zero
+            weights = {k: 1.0 / len(weights) for k in weights.keys()}
+        
+        # Calculate ensemble prediction
+        ensemble_pred = np.zeros(prediction_days)
+        ensemble_uncertainty = np.zeros(prediction_days)
+        
+        for name, pred in predictions.items():
+            if name in weights:
+                ensemble_pred += weights[name] * pred[:prediction_days]
+                ensemble_uncertainty += weights[name] * uncertainties[name][:prediction_days]
+        
+        return ensemble_pred, ensemble_uncertainty
+    
+    except Exception as e:
+        print(f"Enhanced ensemble model error: {str(e)}")
+        return np.array([]), np.array([])
+
+def calculate_volume_prediction_enhanced(df: pd.DataFrame, price_prediction: np.ndarray, 
+                                       covariate_data: Dict = None) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Enhanced volume prediction using multiple factors and relationships.
+    
+    Args:
+        df (pd.DataFrame): Stock data
+        price_prediction (np.ndarray): Price predictions
+        covariate_data (Dict): Covariate data
+    
+    Returns:
+        Tuple[np.ndarray, np.ndarray]: Volume predictions and uncertainties
+    """
+    try:
+        # Get historical volume and price data
+        volume_data = df['Volume'].values
+        price_data = df['Close'].values
+        
+        # Calculate volume-price relationship
+        volume_price_ratio = volume_data / price_data
+        volume_volatility = np.std(volume_data)
+        
+        # Calculate volume momentum
+        volume_momentum = np.diff(volume_data)
+        avg_volume_momentum = np.mean(volume_momentum[-10:])  # Last 10 periods
+        
+        # Predict volume based on price movement
+        price_changes = np.diff(price_prediction)
+        predicted_volume = []
+        
+        for i, price_change in enumerate(price_changes):
+            if i == 0:
+                # First prediction based on last actual volume
+                base_volume = volume_data[-1]
+            else:
+                # Subsequent predictions based on price movement and momentum
+                base_volume = predicted_volume[-1]
+            
+            # Adjust volume based on price movement
+            if abs(price_change) > 0.01:  # Significant price movement
+                volume_multiplier = 1.5 if abs(price_change) > 0.02 else 1.2
+            else:
+                volume_multiplier = 0.8
+            
+            # Add momentum effect
+            momentum_effect = 1.0 + (avg_volume_momentum / base_volume) * 0.1
+            
+            # Calculate predicted volume
+            pred_vol = base_volume * volume_multiplier * momentum_effect
+            
+            # Add some randomness based on historical volatility
+            noise = np.random.normal(0, volume_volatility * 0.1)
+            pred_vol = max(0, pred_vol + noise)
+            
+            predicted_volume.append(pred_vol)
+        
+        # Add first prediction
+        predicted_volume.insert(0, volume_data[-1])
+        
+        # Calculate uncertainty
+        volume_uncertainty = volume_volatility * np.ones(len(predicted_volume))
+        
+        # Adjust uncertainty based on prediction horizon
+        for i in range(len(volume_uncertainty)):
+            volume_uncertainty[i] *= (1 + 0.1 * i)
+        
+        return np.array(predicted_volume), np.array(volume_uncertainty)
+    
+    except Exception as e:
+        print(f"Enhanced volume prediction error: {str(e)}")
+        # Fallback to simple prediction
+        last_volume = df['Volume'].iloc[-1]
+        return np.full(len(price_prediction), last_volume), np.full(len(price_prediction), last_volume * 0.2)
+
+def calculate_regime_aware_uncertainty(quantiles: np.ndarray, regime_info: Dict, 
+                                     market_conditions: Dict = None) -> np.ndarray:
+    """
+    Calculate uncertainty that accounts for market regime changes.
+    
+    Args:
+        quantiles (np.ndarray): Quantile predictions
+        regime_info (Dict): Market regime information
+        market_conditions (Dict): Current market conditions
+    
+    Returns:
+        np.ndarray: Regime-aware uncertainty estimates
+    """
+    try:
+        # Get basic uncertainty
+        basic_uncertainty = calculate_skewed_uncertainty(quantiles)
+        
+        # Get regime information
+        if regime_info and 'volatilities' in regime_info:
+            current_volatility = regime_info.get('current_volatility', np.mean(regime_info['volatilities']))
+            avg_volatility = np.mean(regime_info['volatilities'])
+            volatility_ratio = current_volatility / avg_volatility
+        else:
+            volatility_ratio = 1.0
+        
+        # Adjust uncertainty based on regime
+        regime_adjusted = basic_uncertainty * volatility_ratio
+        
+        # Add market condition adjustments
+        if market_conditions:
+            vix_level = market_conditions.get('vix', 20.0)
+            vix_factor = vix_level / 20.0
+            regime_adjusted *= vix_factor
+        
+        return regime_adjusted
+    
+    except Exception as e:
+        print(f"Regime-aware uncertainty calculation error: {str(e)}")
+        return calculate_skewed_uncertainty(quantiles)
+
+def get_market_info_from_yfinance(symbol: str) -> Dict:
+    """
+    Get market information from yfinance using the Market class and other features.
+    
+    Args:
+        symbol (str): Market symbol (e.g., '^GSPC', 'EURUSD=X', 'BTC-USD')
+    
+    Returns:
+        Dict: Market information including current price, volume, and other metrics
+    """
+    try:
+        ticker = yf.Ticker(symbol)
+        
+        # Get basic info
+        info = ticker.info
+        
+        # Get current market data
+        hist = ticker.history(period="1d")
+        
+        # Get additional market data
+        market_data = {}
+        
+        if not hist.empty:
+            market_data.update({
+                'current_price': hist['Close'].iloc[-1],
+                'open_price': hist['Open'].iloc[-1],
+                'high_price': hist['High'].iloc[-1],
+                'low_price': hist['Low'].iloc[-1],
+                'volume': hist['Volume'].iloc[-1],
+                'change': hist['Close'].iloc[-1] - hist['Open'].iloc[-1],
+                'change_percent': ((hist['Close'].iloc[-1] - hist['Open'].iloc[-1]) / hist['Open'].iloc[-1]) * 100
+            })
+        
+        # Get news if available
+        try:
+            news = ticker.news
+            market_data['news_count'] = len(news) if news else 0
+        except:
+            market_data['news_count'] = 0
+        
+        # Get recommendations if available
+        try:
+            recommendations = ticker.recommendations
+            market_data['recommendations'] = recommendations.tail(5).to_dict('records') if not recommendations.empty else []
+        except:
+            market_data['recommendations'] = []
+        
+        # Get earnings info if available
+        try:
+            earnings = ticker.earnings
+            market_data['earnings'] = earnings.tail(4).to_dict('records') if not earnings.empty else []
+        except:
+            market_data['earnings'] = []
+        
+        # Combine all data
+        result = {
+            'symbol': symbol,
+            'info': info,
+            'market_data': market_data,
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        return result
+        
+    except Exception as e:
+        return {
+            'symbol': symbol,
+            'error': str(e),
+            'timestamp': datetime.now().isoformat()
+        }
+
+def get_enhanced_market_summary() -> Dict:
+    """
+    Get enhanced market summary for all configured markets using yfinance.
+    
+    Returns:
+        Dict: Summary of all markets with current data
+    """
+    market_summary = {}
+    
+    for market_key, config in MARKET_CONFIGS.items():
+        try:
+            symbol = config['symbol']
+            market_info = get_market_info_from_yfinance(symbol)
+            market_status = market_status_manager.get_status(market_key)
+            
+            market_summary[market_key] = {
+                'config': config,
+                'status': {
+                    'is_open': market_status.is_open,
+                    'status_text': market_status.status_text,
+                    'current_time': market_status.current_time_et,
+                    'next_trading_day': market_status.next_trading_day
+                },
+                'market_data': market_info.get('market_data', {}),
+                'info': market_info.get('info', {}),
+                'last_updated': datetime.now().isoformat()
+            }
+            
+        except Exception as e:
+            market_summary[market_key] = {
+                'config': config,
+                'error': str(e),
+                'last_updated': datetime.now().isoformat()
+            }
+    
+    return market_summary
+
 if __name__ == "__main__":
-    demo = create_interface()
-    demo.launch(ssr_mode=False, mcp_server=True) 
+    import signal
+    import atexit
+    
+    # Register cleanup function
+    atexit.register(cleanup_on_exit)
+    
+    # Handle SIGINT and SIGTERM for graceful shutdown
+    def signal_handler(signum, frame):
+        print(f"\nReceived signal {signum}. Shutting down gracefully...")
+        cleanup_on_exit()
+        exit(0)
+    
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
+    try:
+        demo = create_interface()
+        print("Starting Advanced Stock Prediction Analysis with real-time market status updates...")
+        print("Market status will update every 15 minutes automatically.")
+        demo.launch(ssr_mode=False, mcp_server=True)
+    except KeyboardInterrupt:
+        print("\nApplication interrupted by user. Shutting down...")
+        cleanup_on_exit()
+    except Exception as e:
+        print(f"Error starting application: {str(e)}")
+        cleanup_on_exit()
+        raise

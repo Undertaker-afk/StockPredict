@@ -13,207 +13,264 @@ tags:
   - mcp-server-track
 ---
 
-# Advanced Stock Prediction Analysis
+# Enhanced Stock Prediction System with Amazon Chronos
 
-A comprehensive stock prediction and analysis tool that combines Chronos forecasting with advanced features including regime detection, ensemble methods, and stress testing.
+A comprehensive stock prediction and analysis system that leverages Amazon's Chronos foundation model for time series forecasting, enhanced with advanced covariate data, sentiment analysis, and sophisticated uncertainty calculations.
 
-## Features
+## 🚀 Key Features
 
 ### Core Prediction Engine
-- **Chronos Forecasting**: State-of-the-art time series forecasting using Amazon's Chronos model
-- **Technical Analysis**: Traditional technical indicators (RSI, MACD, Bollinger Bands, SMA)
-- **Multi-timeframe Support**: Daily, hourly, and 15-minute analysis
-- **Real-time Data**: Live market data via yfinance
+- **Amazon Chronos Integration**: Uses the state-of-the-art Chronos T5 foundation model for probabilistic time series forecasting
+- **Multi-Timeframe Analysis**: Support for daily, hourly, and 15-minute timeframes
+- **Advanced Ensemble Methods**: Combines multiple algorithms including Random Forest, Gradient Boosting, SVR, and Neural Networks
 
-### Advanced Features
+### Enhanced Covariate Data
+- **Market Indices**: S&P 500, Dow Jones, NASDAQ, VIX, Treasury yields
+- **Sector ETFs**: Financial, Technology, Energy, Healthcare, and more
+- **Commodities**: Gold, Silver, Oil, Natural Gas, Corn, Soybeans
+- **Currencies**: EUR/USD, GBP/USD, JPY/USD, CHF/USD, CAD/USD
+- **Economic Indicators**: Inflation proxies, volatility indices, dollar strength
 
-#### 1. Market Regime Detection
-- **Hidden Markov Models (HMM)**: Automatic detection of market regimes (bull, bear, sideways)
-- **Volatility-based Fallback**: Simplified regime detection when HMM is unavailable
-- **Regime-adjusted Signals**: Trading signals that adapt to current market conditions
+### Advanced Uncertainty Calculations
+- **Multiple Uncertainty Methods**:
+  - Basic quantile-based uncertainty
+  - Skewness-adjusted uncertainty
+  - Volatility-scaled uncertainty
+  - Market condition adjusted uncertainty
+  - Time-decay uncertainty
+  - Ensemble uncertainty (combines all methods)
+- **Regime-Aware Uncertainty**: Adjusts uncertainty based on market regime detection
+- **Confidence Intervals**: 95% confidence bands with multiple calculation methods
 
-#### 2. Ensemble Methods
-- **Multi-model Combination**: Combines Chronos, technical, and statistical predictions
-- **Adaptive Weighting**: User-configurable weights for different models
-- **Uncertainty Quantification**: Advanced uncertainty estimation with skewness adjustment
+### Enhanced Volume Prediction
+- **Price-Volume Relationship Modeling**: Analyzes the relationship between price movements and volume
+- **Volume Momentum**: Incorporates volume momentum and trends
+- **Market Condition Adjustments**: Adjusts volume predictions based on market volatility
+- **Uncertainty Quantification**: Provides volume prediction uncertainty estimates
 
-#### 3. Advanced Risk Metrics
-- **Tail Risk Analysis**: VaR and CVaR calculations
-- **Market Correlation**: Beta, alpha, and correlation with market indices
-- **Risk-adjusted Returns**: Sharpe, Sortino, and Calmar ratios
-- **Drawdown Analysis**: Maximum drawdown and recovery metrics
+### Sentiment Analysis
+- **News Sentiment Scoring**: Analyzes news articles for sentiment polarity
+- **Confidence Levels**: Provides confidence scores for sentiment analysis
+- **Real-time Integration**: Incorporates sentiment data into prediction models
 
-#### 4. Stress Testing
-- **Scenario Analysis**: Market crash, high volatility, bull market scenarios
-- **Interest Rate Shocks**: Impact of rate changes on predictions
-- **Custom Scenarios**: User-defined stress test parameters
+### Market Regime Detection
+- **Hidden Markov Models**: Detects bull, bear, and sideways market regimes
+- **Volatility Clustering**: Identifies periods of high and low volatility
+- **Regime-Aware Predictions**: Adjusts predictions based on current market regime
 
-#### 5. Enhanced Uncertainty Quantification
-- **Skewness-aware**: Accounts for non-normal return distributions
-- **Adaptive Smoothing**: Reduces prediction drift based on uncertainty
-- **Confidence Intervals**: Dynamic confidence levels based on market conditions
+### Advanced Algorithms
+- **Multi-Algorithm Ensemble**:
+  - Random Forest Regressor
+  - Gradient Boosting Regressor
+  - Ridge Regression
+  - Lasso Regression
+  - Support Vector Regression (SVR)
+  - Multi-Layer Perceptron (MLP)
+- **Time Series Cross-Validation**: Uses expanding window validation for robust model evaluation
+- **Weighted Ensemble**: Combines predictions using uncertainty-weighted averaging
 
-## Installation
+### Financial Smoothing
+- **Multiple Smoothing Methods**:
+  - Exponential smoothing (trend following)
+  - Moving average (noise reduction)
+  - Kalman filter (adaptive smoothing)
+  - Savitzky-Golay (preserves peaks/valleys)
+  - Double exponential (trend + level)
+  - Triple exponential (complex patterns)
+  - Adaptive smoothing (volatility-based)
 
-1. Install dependencies:
+## 📊 Technical Indicators
+
+### Price-Based Indicators
+- **RSI (Relative Strength Index)**: Momentum oscillator with regime-adjusted thresholds
+- **MACD (Moving Average Convergence Divergence)**: Trend-following momentum indicator
+- **Bollinger Bands**: Volatility indicator with position analysis
+- **Moving Averages**: SMA 20, SMA 50 with crossover analysis
+
+### Volume-Based Indicators
+- **Volume-Price Trend**: Analyzes the relationship between volume and price movements
+- **Volume Momentum**: Tracks volume changes over time
+- **Volume Volatility**: Measures volume stability
+- **Volume Ratio**: Compares current volume to historical averages
+
+### Risk Metrics
+- **Sharpe Ratio**: Risk-adjusted return measure
+- **Value at Risk (VaR)**: Maximum expected loss at given confidence level
+- **Maximum Drawdown**: Largest peak-to-trough decline
+- **Beta**: Market correlation measure
+- **Volatility**: Historical and implied volatility measures
+
+## 🛠️ Installation
+
+1. **Install Dependencies**:
 ```bash
 pip install -r requirements.txt
 ```
 
-2. Run the application:
+2. **Key Dependencies**:
+- `chronos-forecasting>=1.0.0`: Amazon's Chronos foundation model
+- `torch>=2.1.2`: PyTorch for deep learning
+- `yfinance>=0.2.0`: Yahoo Finance data
+- `scikit-learn>=1.3.0`: Machine learning algorithms
+- `plotly>=5.0.0`: Interactive visualizations
+- `gradio>=4.0.0`: Web interface
+- `textblob>=0.17.1`: Sentiment analysis
+- `arch>=6.2.0`: GARCH modeling
+- `hmmlearn>=0.3.0`: Hidden Markov Models
+
+## 🚀 Usage
+
+### Web Interface
 ```bash
 python app.py
 ```
 
-## Usage
+The application provides a comprehensive web interface with three main tabs:
 
-### Basic Analysis
-1. Enter a stock symbol (e.g., AAPL, MSFT, GOOGL)
-2. Select timeframe (Daily, Hourly, or 15-minute)
-3. Choose prediction strategy (Chronos or Technical)
-4. Set prediction days and lookback period
-5. Click "Analyze Stock"
+1. **Daily Analysis**: Long-term investment analysis (up to 365 days)
+2. **Hourly Analysis**: Medium-term trading analysis (up to 7 days)
+3. **15-Minute Analysis**: Short-term scalping analysis (up to 3 days)
 
 ### Advanced Settings
-- **Ensemble Methods**: Enable/disable multi-model combination
-- **Regime Detection**: Enable/disable market regime analysis
+- **Ensemble Methods**: Enable/disable multi-algorithm ensemble
+- **Regime Detection**: Enable/disable market regime detection
 - **Stress Testing**: Enable/disable scenario analysis
-- **Risk-free Rate**: Set annual risk-free rate for calculations
-- **Market Index**: Choose correlation index (S&P 500, Dow Jones, NASDAQ, Russell 2000)
-- **Ensemble Weights**: Adjust weights for Chronos, Technical, and Statistical models
+- **Enhanced Covariate Data**: Include market indices, sectors, commodities
+- **Sentiment Analysis**: Include news sentiment analysis
+- **Smoothing**: Choose from multiple smoothing algorithms
 
-### Output Sections
+### Ensemble Weights
+Configure the weights for different prediction methods:
+- **Chronos Weight**: Weight for Amazon Chronos predictions
+- **Technical Weight**: Weight for technical analysis
+- **Statistical Weight**: Weight for statistical models
 
-#### Daily Analysis
-- **Structured Product Metrics**: Market cap, sector, financial ratios
-- **Advanced Risk Analysis**: Comprehensive risk metrics with market correlation
-- **Market Regime Analysis**: Current regime and transition probabilities
-- **Trading Signals**: Advanced signals with confidence levels
-- **Stress Test Results**: Scenario analysis outcomes
-- **Ensemble Analysis**: Multi-model combination details
+## 📈 Prediction Features
 
-#### Hourly/15-minute Analysis
-- **Intraday Metrics**: High-frequency volatility and momentum indicators
-- **Volume Analysis**: Volume-price trends and momentum
-- **Real-time Indicators**: Pre/post market data analysis
+### Enhanced Uncertainty Quantification
+The system provides multiple uncertainty calculation methods:
 
-## Technical Details
+1. **Basic Uncertainty**: Standard quantile-based uncertainty
+2. **Skewness-Adjusted**: Accounts for asymmetric return distributions
+3. **Volatility-Scaled**: Scales uncertainty based on historical volatility
+4. **Market-Adjusted**: Adjusts uncertainty based on VIX and market conditions
+5. **Time-Decay**: Uncertainty increases with prediction horizon
+6. **Ensemble Uncertainty**: Combines all methods for robust estimates
+
+### Volume Prediction Improvements
+- **Price-Volume Relationship**: Models the relationship between price movements and volume
+- **Momentum Effects**: Incorporates volume momentum and trends
+- **Market Condition Adjustments**: Adjusts predictions based on market volatility
+- **Uncertainty Quantification**: Provides confidence intervals for volume predictions
+
+### Covariate Integration
+The system automatically collects and integrates:
+- **Market Indices**: S&P 500, Dow Jones, NASDAQ, VIX
+- **Sector Performance**: Financial, Technology, Energy, Healthcare ETFs
+- **Economic Indicators**: Treasury yields, dollar index, commodity prices
+- **Global Markets**: International indices and currencies
+
+## 🔬 Advanced Features
 
 ### Regime Detection
-- Uses Hidden Markov Models with 3 states (low volatility, normal, high volatility)
-- Falls back to volatility-based detection if HMM unavailable
-- Regime probabilities influence trading signal thresholds
+Uses Hidden Markov Models to detect market regimes:
+- **Bull Market**: High returns, low volatility
+- **Bear Market**: Low returns, high volatility  
+- **Sideways Market**: Low returns, low volatility
 
-### Ensemble Methods
-- **Chronos**: Primary deep learning model (60% default weight)
-- **Technical**: Traditional indicators with mean reversion (20% default weight)
-- **Statistical**: ARIMA-like models with momentum (20% default weight)
+### Stress Testing
+Performs scenario analysis under various market conditions:
+- **Market Crash**: -20% market decline
+- **Volatility Spike**: 50% increase in VIX
+- **Interest Rate Shock**: 100 basis point rate increase
+- **Sector Rotation**: Major sector performance shifts
 
-### Stress Testing Scenarios
-- **Market Crash**: 3x volatility, -15% return shock
-- **High Volatility**: 2x volatility, -5% return shock
-- **Low Volatility**: 0.5x volatility, +2% return shock
-- **Bull Market**: 1.2x volatility, +10% return shock
-- **Interest Rate Shock**: 1.5x volatility, -8% return shock
+### Sentiment Analysis
+- **News Sentiment**: Analyzes recent news articles for sentiment
+- **Confidence Scoring**: Provides confidence levels for sentiment analysis
+- **Integration**: Incorporates sentiment into prediction models
 
-### Uncertainty Quantification
-- Skewness-adjusted confidence intervals
-- Adaptive smoothing based on prediction uncertainty
-- Time-varying volatility modeling
+## 📊 Output Metrics
 
-## Dependencies
+### Trading Signals
+- **RSI Signals**: Oversold/Overbought with confidence levels
+- **MACD Signals**: Buy/Sell with strength indicators
+- **Bollinger Bands**: Position within bands with breakout signals
+- **SMA Signals**: Trend following with crossover analysis
 
-### Core
-- `torch>=2.1.2`: PyTorch for deep learning
-- `chronos-forecasting>=1.0.0`: Amazon's Chronos model
-- `yfinance>=0.2.0`: Yahoo Finance data
-- `gradio>=4.0.0`: Web interface
+### Risk Metrics
+- **Sharpe Ratio**: Risk-adjusted return measure
+- **VaR**: Value at Risk at 95% confidence
+- **Maximum Drawdown**: Largest historical decline
+- **Beta**: Market correlation coefficient
+- **Volatility**: Historical and implied volatility
 
-### Advanced Features
-- `hmmlearn>=0.3.0`: Hidden Markov Models for regime detection
-- `scipy>=1.10.0`: Scientific computing and statistics
-- `scikit-learn>=1.0.0`: Machine learning utilities
-- `plotly>=5.0.0`: Interactive visualizations
+### Enhanced Features
+- **Covariate Data Usage**: Indicates which external data was used
+- **Sentiment Analysis**: News sentiment scores and confidence
+- **Advanced Uncertainty Methods**: List of uncertainty calculation methods used
+- **Regime-Aware Uncertainty**: Whether regime detection was applied
+- **Enhanced Volume Prediction**: Whether advanced volume modeling was used
 
-## Limitations
+## 🎯 Use Cases
 
-1. **Market Hours**: Intraday data (hourly/15-minute) only available during market hours
-2. **Data Quality**: Dependent on yfinance data availability and quality
-3. **Model Complexity**: Advanced features may increase computation time
-4. **GPU Requirements**: Chronos model requires CUDA-capable GPU for optimal performance
+### Long-Term Investment (Daily Analysis)
+- Portfolio management and asset allocation
+- Strategic investment decisions
+- Risk management and hedging
+- Sector rotation strategies
 
-## Disclaimer
+### Medium-Term Trading (Hourly Analysis)
+- Swing trading strategies
+- Position sizing and timing
+- Intraday volatility analysis
+- Momentum-based trading
 
-This tool is for educational and research purposes only. Stock predictions are inherently uncertain and should not be used as the sole basis for investment decisions. Always conduct thorough research and consider consulting with financial professionals before making investment decisions.
+### Short-Term Trading (15-Minute Analysis)
+- Scalping strategies
+- High-frequency trading
+- Micro-pattern recognition
+- Ultra-short-term momentum
 
-## Contributing
+## 🔧 Configuration
 
-Contributions are welcome! Please feel free to submit pull requests or open issues for bugs and feature requests.
+### Model Parameters
+- **Chronos Model**: `amazon/chronos-t5-large` (default)
+- **Context Window**: 64 time steps
+- **Prediction Length**: Configurable up to model limits
+- **Quantile Levels**: [0.1, 0.5, 0.9] for uncertainty estimation
 
-## License
+### Data Sources
+- **Primary**: Yahoo Finance (yfinance)
+- **Covariates**: Market indices, ETFs, commodities, currencies
+- **Sentiment**: News articles via yfinance
+- **Economic Data**: Treasury yields, VIX, dollar index
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+## 📝 Notes
 
-## Practical Example: Creating a 6-Month 8% Yield Structured Product
+- **Market Hours**: Hourly and 15-minute data only available during market hours
+- **Data Limitations**: Yahoo Finance has specific limits for intraday data
+- **Model Performance**: Chronos performs best with sufficient historical data
+- **Uncertainty**: All predictions include comprehensive uncertainty estimates
+- **Ensemble Weights**: Should sum to 1.0 for optimal performance
 
-### Scenario
-A bank needs to create a structured product that offers an 8% yield over 6 months while maintaining profitability for the institution.
+## 🤝 Contributing
 
-### Step-by-Step Implementation
+This system is designed to be extensible. Key areas for enhancement:
+- Additional covariate data sources
+- New uncertainty calculation methods
+- Advanced sentiment analysis techniques
+- Custom technical indicators
+- Alternative ensemble methods
 
-1. **Initial Stock Screening**
-   - Use the application to analyze stocks with:
-     - High liquidity (for easy hedging)
-     - Stable volatility (for predictable risk)
-     - Strong technical indicators
-     - Positive long-term trends
-   - Recommended stocks: AAPL, MSFT, GOOGL (high liquidity, stable volatility)
+## 📄 License
 
-2. **Product Structure Design**
-   - Use the 6-month prediction horizon
-   - Analyze historical volatility for barrier setting
-   - Set participation rate based on risk metrics
-   - Structure: Reverse Convertible with 8% coupon
+This project is licensed under the Apache-2.0 License.
 
-3. **Risk Analysis**
-   - Use the application's risk metrics:
-     - Check maximum drawdown (should be < 15% for 6 months)
-     - Verify liquidity scores (should be > 80%)
-     - Analyze Sharpe ratio (should be > 1.5)
+## 🙏 Acknowledgments
 
-4. **Business Case Example**
-
-   **Product Parameters:**
-   - Notional Amount: $1,000,000
-   - Term: 6 months
-   - Coupon: 8% p.a. (4% for 6 months)
-   - Underlying: AAPL
-   - Barrier: 85% of initial price
-   - Participation: 100%
-
-   **Revenue Structure:**
-   - Client receives: 8% p.a. (4% for 6 months)
-   - Bank's hedging cost: ~5% p.a.
-   - Bank's profit margin: ~3% p.a.
-   - Total client payout: $40,000 (4% of $1M)
-   - Bank's profit: $15,000 (1.5% of $1M)
-
-5. **Implementation Steps**
-   - Use the application's extended prediction horizon (180 days)
-   - Set technical indicators to monitor barrier risk
-   - Implement dynamic delta hedging based on predictions
-   - Monitor risk metrics daily using the application
-
-6. **Risk Management**
-   - Use the application's volatility predictions for dynamic hedging
-   - Monitor technical indicators for early warning signals
-   - Set up automated alerts for barrier proximity
-   - Regular rebalancing based on prediction updates
-
-### Key Success Factors
-- Regular monitoring of prediction accuracy
-- Dynamic adjustment of hedging strategy
-- Clear communication of product risks to clients
-- Proper documentation of all assumptions and methodologies
-
-This example demonstrates how the application can be used to create profitable structured products while managing risk effectively. The bank can use this framework to create similar products with different underlying assets, terms, and yield targets.
+- **Amazon Chronos**: Foundation model for time series forecasting
+- **Yahoo Finance**: Market data provider
+- **Gradio**: Web interface framework
+- **Plotly**: Interactive visualizations
+- **Scikit-learn**: Machine learning algorithms
