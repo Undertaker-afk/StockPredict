@@ -2997,7 +2997,7 @@ The **Advanced Stock Prediction System** is a cutting-edge AI-powered platform w
         # The display can be manually refreshed by users if needed
         
         # Add simple market status check feature
-        with gr.Accordion("🌎 Global Market Information", open=False)
+        with gr.Accordion("🌎 Global Market Information", open=False): 
             with gr.Column(scale=1):
                 gr.Markdown("### 📊 Quick Market Status Check")
                 # Create user-friendly market choices
