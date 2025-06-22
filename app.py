@@ -21,6 +21,7 @@ from scipy.optimize import minimize
 import warnings
 import threading
 from dataclasses import dataclass
+from transformers import GenerationConfig
 warnings.filterwarnings('ignore')
 
 # Additional imports for advanced features
@@ -1044,6 +1045,18 @@ def make_prediction_enhanced(symbol: str, timeframe: str = "1d", prediction_days
                 # Convert to tensor and ensure proper shape and device
                 context = torch.tensor(normalized_prices, dtype=dtype, device=device)
                 
+                # Validate context data
+                if torch.isnan(context).any() or torch.isinf(context).any():
+                    print("Warning: Context contains NaN or Inf values, replacing with zeros")
+                    context = torch.nan_to_num(context, nan=0.0, posinf=0.0, neginf=0.0)
+                
+                # Ensure context is finite and reasonable
+                if torch.abs(context).max() > 1000:
+                    print("Warning: Context values are very large, normalizing")
+                    context = torch.clamp(context, -1000, 1000)
+                
+                print(f"Context validation - Shape: {context.shape}, Min: {context.min():.4f}, Max: {context.max():.4f}, Mean: {context.mean():.4f}")
+                
                 # Adjust prediction length based on timeframe
                 if timeframe == "1d":
                     max_prediction_length = chronos_context_size  # 64 days
@@ -1057,29 +1070,28 @@ def make_prediction_enhanced(symbol: str, timeframe: str = "1d", prediction_days
                     max_prediction_length = chronos_context_size  # 64 intervals
                     actual_prediction_length = min(prediction_days * 96, max_prediction_length)
                     trim_length = prediction_days * 96
-                actual_prediction_length = max(1, actual_prediction_length)
+                
+                # Ensure prediction length is valid (must be positive and reasonable)
+                actual_prediction_length = max(1, min(actual_prediction_length, 64))
+                
+                print(f"Prediction length: {actual_prediction_length}")
+                print(f"Context length: {len(context)}")
                 
                 # Use predict_quantiles with proper formatting
                 with torch.amp.autocast('cuda'):
                     # Ensure all inputs are on GPU
                     context = context.to(device)
                     
-                    # Move quantile levels to GPU
-                    quantile_levels = torch.tensor([0.1, 0.5, 0.9], device=device, dtype=dtype)
-                    
-                    # Ensure prediction length is on GPU
-                    prediction_length = torch.tensor(actual_prediction_length, device=device, dtype=torch.long)
+                    # Ensure context is properly shaped and on GPU
+                    if len(context.shape) == 1:
+                        context = context.unsqueeze(0)
+                    context = context.to(device)
                     
                     # Force all model components to GPU
                     pipe.model = pipe.model.to(device)
                     
                     # Move model to evaluation mode
                     pipe.model.eval()
-                    
-                    # Ensure context is properly shaped and on GPU
-                    if len(context.shape) == 1:
-                        context = context.unsqueeze(0)
-                    context = context.to(device)
                     
                     # Move all model parameters and buffers to GPU
                     for param in pipe.model.parameters():
@@ -1158,6 +1170,24 @@ def make_prediction_enhanced(symbol: str, timeframe: str = "1d", prediction_days
                     # Ensure all model components are in eval mode
                     pipe.model.eval()
                     
+                    # Fix generation configuration to prevent min_length errors
+                    if hasattr(pipe.model, 'config'):
+                        # Ensure generation config is properly set
+                        if hasattr(pipe.model.config, 'generation_config'):
+                            # Reset generation config to safe defaults
+                            pipe.model.config.generation_config.min_length = 0
+                            pipe.model.config.generation_config.max_length = 512
+                            pipe.model.config.generation_config.do_sample = False
+                            pipe.model.config.generation_config.num_beams = 1
+                        else:
+                            # Create a safe generation config if it doesn't exist
+                            pipe.model.config.generation_config = GenerationConfig(
+                                min_length=0,
+                                max_length=512,
+                                do_sample=False,
+                                num_beams=1
+                            )
+                    
                     # Move any additional tensors in the model's config to GPU
                     if hasattr(pipe.model, 'config'):
                         for key, value in pipe.model.config.__dict__.items():
@@ -1231,12 +1261,34 @@ def make_prediction_enhanced(symbol: str, timeframe: str = "1d", prediction_days
                     # Force synchronization again to ensure all tensors are on GPU
                     torch.cuda.synchronize()
                     
-                    # Make prediction
-                    quantiles, mean = pipe.predict_quantiles(
-                        context=context,
-                        prediction_length=prediction_length,
-                        quantile_levels=quantile_levels
-                    )
+                    # Make prediction with proper parameters
+                    # Use the standard quantile levels as per Chronos documentation
+                    try:
+                        quantiles, mean = pipe.predict_quantiles(
+                            context=context,
+                            prediction_length=actual_prediction_length,
+                            quantile_levels=[0.1, 0.5, 0.9]
+                        )
+                    except Exception as prediction_error:
+                        print(f"Chronos prediction failed: {str(prediction_error)}")
+                        print(f"Context shape: {context.shape}")
+                        print(f"Context dtype: {context.dtype}")
+                        print(f"Context device: {context.device}")
+                        print(f"Prediction length: {actual_prediction_length}")
+                        print(f"Model device: {next(pipe.model.parameters()).device}")
+                        print(f"Model dtype: {next(pipe.model.parameters()).dtype}")
+                        
+                        # Try with a smaller prediction length as fallback
+                        if actual_prediction_length > 1:
+                            print(f"Retrying with prediction length 1...")
+                            actual_prediction_length = 1
+                            quantiles, mean = pipe.predict_quantiles(
+                                context=context,
+                                prediction_length=actual_prediction_length,
+                                quantile_levels=[0.1, 0.5, 0.9]
+                            )
+                        else:
+                            raise prediction_error
                 
                 if quantiles is None or mean is None or len(quantiles) == 0 or len(mean) == 0:
                     raise ValueError("Chronos returned empty prediction")
@@ -1310,12 +1362,32 @@ def make_prediction_enhanced(symbol: str, timeframe: str = "1d", prediction_days
                             context = context.unsqueeze(0)
                         
                         next_length = min(max_prediction_length, remaining_steps)
+                        # Ensure next_length is valid (must be positive and reasonable)
+                        next_length = max(1, min(next_length, 64))
+                        
                         with torch.amp.autocast('cuda'):
-                            next_quantiles, next_mean = pipe.predict_quantiles(
-                                context=context,
-                                prediction_length=next_length,
-                                quantile_levels=[0.1, 0.5, 0.9]
-                            )
+                            try:
+                                next_quantiles, next_mean = pipe.predict_quantiles(
+                                    context=context,
+                                    prediction_length=next_length,
+                                    quantile_levels=[0.1, 0.5, 0.9]
+                                )
+                            except Exception as extension_error:
+                                print(f"Chronos extension prediction failed: {str(extension_error)}")
+                                print(f"Extension context shape: {context.shape}")
+                                print(f"Extension prediction length: {next_length}")
+                                
+                                # Try with a smaller prediction length as fallback
+                                if next_length > 1:
+                                    print(f"Retrying extension with prediction length 1...")
+                                    next_length = 1
+                                    next_quantiles, next_mean = pipe.predict_quantiles(
+                                        context=context,
+                                        prediction_length=next_length,
+                                        quantile_levels=[0.1, 0.5, 0.9]
+                                    )
+                                else:
+                                    raise extension_error
                         
                         # Convert predictions to numpy and denormalize using original scaler
                         next_mean = next_mean.detach().cpu().numpy()
