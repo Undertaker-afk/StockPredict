@@ -1666,11 +1666,11 @@ def make_prediction_enhanced(symbol: str, timeframe: str = "1d", prediction_days
         else:  # 15m
             pred_dates = pd.date_range(start=last_date + timedelta(minutes=15), periods=prediction_days * 96)
         
-        # Create enhanced visualization
-        fig = make_subplots(rows=4, cols=1, 
+        # Create enhanced visualization with uncertainties integrated
+        fig = make_subplots(rows=3, cols=1, 
                            shared_xaxes=True,
                            vertical_spacing=0.05,
-                           subplot_titles=('Price Prediction', 'Technical Indicators', 'Volume', 'Uncertainty Analysis'))
+                           subplot_titles=('Price Prediction with Uncertainty', 'Technical Indicators with Uncertainty', 'Volume with Uncertainty'))
         
         # Add historical price
         fig.add_trace(
@@ -1679,104 +1679,51 @@ def make_prediction_enhanced(symbol: str, timeframe: str = "1d", prediction_days
             row=1, col=1
         )
         
-        # Add predicted price with uncertainty bands
+        # Add predicted price with integrated uncertainty bands
         fig.add_trace(
             go.Scatter(x=pred_dates, y=final_pred, name='Predicted Price',
-                      line=dict(color='red', width=2)),
+                      line=dict(color='red', width=3)),
             row=1, col=1
         )
         
-        # Add uncertainty bands
-        upper_band = final_pred + 2 * final_uncertainty
-        lower_band = final_pred - 2 * final_uncertainty
-        
-        fig.add_trace(
-            go.Scatter(x=pred_dates, y=upper_band, name='Upper Bound (95%)',
-                      line=dict(color='red', width=1, dash='dash'), showlegend=False),
-            row=1, col=1
-        )
-        
-        fig.add_trace(
-            go.Scatter(x=pred_dates, y=lower_band, name='Lower Bound (95%)',
-                      line=dict(color='red', width=1, dash='dash'), fill='tonexty',
-                      fillcolor='rgba(255,0,0,0.1)', showlegend=False),
-            row=1, col=1
-        )
-        
-        # Add technical indicators
-        fig.add_trace(
-            go.Scatter(x=df.index, y=df['RSI'], name='RSI (Historical)',
-                      line=dict(color='purple', width=1)),
-            row=2, col=1
-        )
-        
-        # Add predicted RSI if available
-        if 'RSI' in technical_predictions:
+        # Add price uncertainty bands on the same subplot
+        if final_uncertainty is not None and len(final_uncertainty) > 0:
+            uncertainty_clean = np.array(final_uncertainty)
+            uncertainty_clean = np.where(np.isnan(uncertainty_clean), 0, uncertainty_clean)
+            
+            # Create confidence bands
+            confidence_68 = uncertainty_clean  # 1 standard deviation (68% confidence)
+            confidence_95 = 2 * uncertainty_clean  # 2 standard deviations (95% confidence)
+            
+            # Plot 95% confidence bands
             fig.add_trace(
-                go.Scatter(x=pred_dates, y=technical_predictions['RSI'], name='RSI (Predicted)',
-                          line=dict(color='purple', width=2, dash='dash')),
-                row=2, col=1
+                go.Scatter(x=pred_dates, y=final_pred + confidence_95, name='95% Confidence Upper',
+                          line=dict(color='red', width=1, dash='dash'), showlegend=False),
+                row=1, col=1
             )
             
-            # Add RSI uncertainty bands
-            if 'RSI' in technical_uncertainties:
-                rsi_upper = technical_predictions['RSI'] + 2 * technical_uncertainties['RSI']
-                rsi_lower = technical_predictions['RSI'] - 2 * technical_uncertainties['RSI']
-                
-                fig.add_trace(
-                    go.Scatter(x=pred_dates, y=rsi_upper, name='RSI Upper Bound',
-                              line=dict(color='purple', width=1, dash='dot'), showlegend=False),
-                    row=2, col=1
-                )
-                
-                fig.add_trace(
-                    go.Scatter(x=pred_dates, y=rsi_lower, name='RSI Lower Bound',
-                              line=dict(color='purple', width=1, dash='dot'), fill='tonexty',
-                              fillcolor='rgba(128,0,128,0.1)', showlegend=False),
-                    row=2, col=1
-                )
-        
-        fig.add_trace(
-            go.Scatter(x=df.index, y=df['MACD'], name='MACD (Historical)',
-                      line=dict(color='orange', width=1)),
-            row=2, col=1
-        )
-        
-        # Add predicted MACD if available
-        if 'MACD' in technical_predictions:
             fig.add_trace(
-                go.Scatter(x=pred_dates, y=technical_predictions['MACD'], name='MACD (Predicted)',
-                          line=dict(color='orange', width=2, dash='dash')),
-                row=2, col=1
+                go.Scatter(x=pred_dates, y=final_pred - confidence_95, name='95% Confidence Lower',
+                          line=dict(color='red', width=1, dash='dash'), fill='tonexty',
+                          fillcolor='rgba(255,0,0,0.1)', showlegend=False),
+                row=1, col=1
             )
             
-            # Add MACD signal line if available
-            if 'MACD_Signal' in technical_predictions:
-                fig.add_trace(
-                    go.Scatter(x=pred_dates, y=technical_predictions['MACD_Signal'], name='MACD Signal (Predicted)',
-                              line=dict(color='red', width=1, dash='dash')),
-                    row=2, col=1
-                )
+            # Plot 68% confidence bands
+            fig.add_trace(
+                go.Scatter(x=pred_dates, y=final_pred + confidence_68, name='68% Confidence Upper',
+                          line=dict(color='darkred', width=1, dash='dot'), showlegend=False),
+                row=1, col=1
+            )
             
-            # Add MACD uncertainty bands
-            if 'MACD' in technical_uncertainties:
-                macd_upper = technical_predictions['MACD'] + 2 * technical_uncertainties['MACD']
-                macd_lower = technical_predictions['MACD'] - 2 * technical_uncertainties['MACD']
-                
-                fig.add_trace(
-                    go.Scatter(x=pred_dates, y=macd_upper, name='MACD Upper Bound',
-                              line=dict(color='orange', width=1, dash='dot'), showlegend=False),
-                    row=2, col=1
-                )
-                
-                fig.add_trace(
-                    go.Scatter(x=pred_dates, y=macd_lower, name='MACD Lower Bound',
-                              line=dict(color='orange', width=1, dash='dot'), fill='tonexty',
-                              fillcolor='rgba(255,165,0,0.1)', showlegend=False),
-                    row=2, col=1
-                )
+            fig.add_trace(
+                go.Scatter(x=pred_dates, y=final_pred - confidence_68, name='68% Confidence Lower',
+                          line=dict(color='darkred', width=1, dash='dot'), fill='tonexty',
+                          fillcolor='rgba(139,0,0,0.1)', showlegend=False),
+                row=1, col=1
+            )
         
-        # Add Bollinger Bands if available
+        # Add Bollinger Bands if available (on price subplot)
         if 'BB_Upper' in df.columns and 'BB_Middle' in df.columns and 'BB_Lower' in df.columns:
             fig.add_trace(
                 go.Scatter(x=df.index, y=df['BB_Upper'], name='BB Upper (Historical)',
@@ -1816,9 +1763,81 @@ def make_prediction_enhanced(symbol: str, timeframe: str = "1d", prediction_days
                     row=1, col=1
                 )
         
-        # Add volume with better data handling
+        # Add technical indicators with their uncertainties on the same subplot
+        # RSI with uncertainty
+        fig.add_trace(
+            go.Scatter(x=df.index, y=df['RSI'], name='RSI (Historical)',
+                      line=dict(color='purple', width=1)),
+            row=2, col=1
+        )
+        
+        if 'RSI' in technical_predictions:
+            fig.add_trace(
+                go.Scatter(x=pred_dates, y=technical_predictions['RSI'], name='RSI (Predicted)',
+                          line=dict(color='purple', width=2, dash='dash')),
+                row=2, col=1
+            )
+            
+            # Add RSI uncertainty bands
+            if 'RSI' in technical_uncertainties:
+                rsi_upper = technical_predictions['RSI'] + 2 * technical_uncertainties['RSI']
+                rsi_lower = technical_predictions['RSI'] - 2 * technical_uncertainties['RSI']
+                
+                fig.add_trace(
+                    go.Scatter(x=pred_dates, y=rsi_upper, name='RSI Upper Bound',
+                              line=dict(color='purple', width=1, dash='dot'), showlegend=False),
+                    row=2, col=1
+                )
+                
+                fig.add_trace(
+                    go.Scatter(x=pred_dates, y=rsi_lower, name='RSI Lower Bound',
+                              line=dict(color='purple', width=1, dash='dot'), fill='tonexty',
+                              fillcolor='rgba(128,0,128,0.1)', showlegend=False),
+                    row=2, col=1
+                )
+        
+        # MACD with uncertainty
+        fig.add_trace(
+            go.Scatter(x=df.index, y=df['MACD'], name='MACD (Historical)',
+                      line=dict(color='orange', width=1)),
+            row=2, col=1
+        )
+        
+        if 'MACD' in technical_predictions:
+            fig.add_trace(
+                go.Scatter(x=pred_dates, y=technical_predictions['MACD'], name='MACD (Predicted)',
+                          line=dict(color='orange', width=2, dash='dash')),
+                row=2, col=1
+            )
+            
+            # Add MACD signal line if available
+            if 'MACD_Signal' in technical_predictions:
+                fig.add_trace(
+                    go.Scatter(x=pred_dates, y=technical_predictions['MACD_Signal'], name='MACD Signal (Predicted)',
+                              line=dict(color='red', width=1, dash='dash')),
+                    row=2, col=1
+                )
+            
+            # Add MACD uncertainty bands
+            if 'MACD' in technical_uncertainties:
+                macd_upper = technical_predictions['MACD'] + 2 * technical_uncertainties['MACD']
+                macd_lower = technical_predictions['MACD'] - 2 * technical_uncertainties['MACD']
+                
+                fig.add_trace(
+                    go.Scatter(x=pred_dates, y=macd_upper, name='MACD Upper Bound',
+                              line=dict(color='orange', width=1, dash='dot'), showlegend=False),
+                    row=2, col=1
+                )
+                
+                fig.add_trace(
+                    go.Scatter(x=pred_dates, y=macd_lower, name='MACD Lower Bound',
+                              line=dict(color='orange', width=1, dash='dot'), fill='tonexty',
+                              fillcolor='rgba(255,165,0,0.1)', showlegend=False),
+                    row=2, col=1
+                )
+        
+        # Add volume with uncertainty on the same subplot
         if 'Volume' in df.columns and not df['Volume'].isna().all():
-            # Ensure volume data is numeric and handle any NaN values
             volume_data = pd.to_numeric(df['Volume'], errors='coerce').fillna(0)
             
             fig.add_trace(
@@ -1862,64 +1881,27 @@ def make_prediction_enhanced(symbol: str, timeframe: str = "1d", prediction_days
                     row=3, col=1
                 )
         
-        # Enhanced uncertainty analysis with confidence bands
-        if final_uncertainty is not None and len(final_uncertainty) > 0:
-            # Ensure uncertainty data is valid
-            uncertainty_clean = np.array(final_uncertainty)
-            uncertainty_clean = np.where(np.isnan(uncertainty_clean), 0, uncertainty_clean)
-            
-            # Create confidence bands
-            confidence_68 = uncertainty_clean  # 1 standard deviation (68% confidence)
-            confidence_95 = 2 * uncertainty_clean  # 2 standard deviations (95% confidence)
-            confidence_99 = 3 * uncertainty_clean  # 3 standard deviations (99% confidence)
-            
-            # Plot uncertainty as confidence bands
-            fig.add_trace(
-                go.Scatter(x=pred_dates, y=final_pred + confidence_95, name='95% Confidence Upper',
-                          line=dict(color='green', width=1, dash='dash'), showlegend=False),
-                row=4, col=1
-            )
-            
-            fig.add_trace(
-                go.Scatter(x=pred_dates, y=final_pred - confidence_95, name='95% Confidence Lower',
-                          line=dict(color='green', width=1, dash='dash'), fill='tonexty',
-                          fillcolor='rgba(0,255,0,0.1)', showlegend=False),
-                row=4, col=1
-            )
-            
-            fig.add_trace(
-                go.Scatter(x=pred_dates, y=final_pred + confidence_68, name='68% Confidence Upper',
-                          line=dict(color='darkgreen', width=1, dash='dot'), showlegend=False),
-                row=4, col=1
-            )
-            
-            fig.add_trace(
-                go.Scatter(x=pred_dates, y=final_pred - confidence_68, name='68% Confidence Lower',
-                          line=dict(color='darkgreen', width=1, dash='dot'), fill='tonexty',
-                          fillcolor='rgba(0,128,0,0.1)', showlegend=False),
-                row=4, col=1
-            )
-            
-            # Add the main prediction line on top
-            fig.add_trace(
-                go.Scatter(x=pred_dates, y=final_pred, name='Prediction with Uncertainty',
-                          line=dict(color='darkgreen', width=3)),
-                row=4, col=1
-            )
-            
-            # Add uncertainty magnitude as a separate line
-            fig.add_trace(
-                go.Scatter(x=pred_dates, y=uncertainty_clean, name='Uncertainty Magnitude',
-                          line=dict(color='orange', width=2)),
-                row=4, col=1
-            )
-        else:
-            print("Warning: No valid uncertainty data available for plotting")
+        # Add reference lines for technical indicators
+        # RSI overbought/oversold lines
+        fig.add_hline(y=70, line_dash="dash", line_color="red", 
+                     annotation_text="Overbought (70)", row=2, col=1)
+        fig.add_hline(y=30, line_dash="dash", line_color="green", 
+                     annotation_text="Oversold (30)", row=2, col=1)
+        
+        # MACD zero line
+        fig.add_hline(y=0, line_dash="dash", line_color="black", 
+                     annotation_text="MACD Zero", row=2, col=1)
+        
+        # Add volume reference line (average volume)
+        if 'Volume' in df.columns and not df['Volume'].isna().all():
+            avg_volume = df['Volume'].mean()
+            fig.add_hline(y=avg_volume, line_dash="dash", line_color="blue", 
+                         annotation_text=f"Avg Volume: {avg_volume:,.0f}", row=3, col=1)
         
         # Update layout with better titles and axis labels
         fig.update_layout(
             title=f'Enhanced Stock Prediction for {symbol}',
-            height=1000,  # Increased height for better visibility
+            height=900,  # Adjusted height for 3 subplots
             showlegend=True,
             legend=dict(
                 orientation="h",
@@ -1931,16 +1913,15 @@ def make_prediction_enhanced(symbol: str, timeframe: str = "1d", prediction_days
         )
         
         # Update subplot titles and axis labels
-        fig.update_xaxes(title_text="Date", row=4, col=1)
+        fig.update_xaxes(title_text="Date", row=3, col=1)
         fig.update_yaxes(title_text="Price ($)", row=1, col=1)
         fig.update_yaxes(title_text="Technical Indicators", row=2, col=1)
         fig.update_yaxes(title_text="Volume", row=3, col=1)
-        fig.update_yaxes(title_text="Price with Uncertainty ($)", row=4, col=1)
         
         # Update subplot titles
         fig.update_annotations(
             dict(
-                text="Price Prediction with Technical Indicators",
+                text="Price Prediction with Uncertainty",
                 x=0.5,
                 y=0.95,
                 xref="paper",
@@ -2936,9 +2917,76 @@ def apply_financial_smoothing(data: np.ndarray, smoothing_type: str = "exponenti
 
 def create_interface():
     """Create the Gradio interface with separate tabs for different timeframes"""
-    with gr.Blocks(title="Advanced Stock Prediction Analysis") as demo:
-        gr.Markdown("# Advanced Stock Prediction Analysis")
-        gr.Markdown("Analyze stocks with advanced features including regime detection, ensemble methods, and stress testing.")
+    
+    # Enhanced title and descriptions
+    title = """# 🙋🏻‍♂️Welcome to 🌟Tonic's  🚀 Stock Prediction with 📦Amazon ⌚Chronos
+---
+"""
+    
+    description = """
+The **Advanced Stock Prediction System** is a cutting-edge AI-powered platform with **580M+ parameters**, designed to analyze and predict stock prices across multiple timeframes. Equipped with **Amazon's Chronos foundation model** and **advanced ensemble methods**, it excels in both short-term trading and long-term investment analysis. The system supports **multi-timeframe analysis**, **real-time market monitoring**, and **comprehensive risk assessment**, enhancing its versatility for all types of traders and investors.
+
+### Key Features
+- **Multi-Timeframe Analysis**: Daily (up to 365 days), Hourly (up to 7 days), and 15-minute (up to 3 days) predictions
+- **Real-Time Market Status**: Check if markets are open with one-click monitoring
+- **Advanced Ensemble Methods**: Combines Chronos, Technical Analysis, and Statistical Models
+- **Enhanced Uncertainty Quantification**: Multiple uncertainty calculation methods for robust predictions
+- **Market Regime Detection**: Identifies bull, bear, and sideways market conditions
+- **Stress Testing**: Scenario analysis under various market conditions
+- **Sentiment Analysis**: News sentiment integration for enhanced predictions
+
+## Supported Markets
+- **US Stock Market** (NYSE, NASDAQ, AMEX): 9:30 AM - 4:00 PM ET
+- **European Markets** (London, Frankfurt, Paris): 8:00 AM - 4:30 PM GMT  
+- **Asian Markets** (Tokyo, Hong Kong, Shanghai): 9:00 AM - 3:30 PM JST
+- **Forex Market** (24/7 Global Currency Exchange)
+- **Cryptocurrency Market** (24/7 Bitcoin, Ethereum, Altcoins)
+- **US Futures Market** (24/7 CME, ICE, CBOT)
+- **Commodities Market** (24/7 Gold, Silver, Oil, Natural Gas)
+"""
+    
+    model_info = """
+## How to Use
+1. **Market Status Check**: Use the dropdown to check if markets are open
+2. **Select Analysis Type**: Choose from Daily, Hourly, or 15-minute analysis
+3. **Enter Stock Symbol**: Input any valid stock symbol (e.g., AAPL, TSLA, GOOGL)
+4. **Configure Parameters**: Adjust prediction days, lookback period, and advanced settings
+5. **Click Analyze**: View comprehensive predictions with uncertainty estimates
+
+## Model Information
+- **Core Model**: Amazon Chronos T5 Foundation Model
+- **Ensemble Methods**: Random Forest, Gradient Boosting, SVR, Neural Networks
+- **Technical Indicators**: RSI, MACD, Bollinger Bands, Moving Averages
+- **Risk Metrics**: Sharpe Ratio, VaR, Maximum Drawdown, Beta
+- **Data Sources**: Yahoo Finance, Market Indices, Economic Indicators
+- **Environment**: PyTorch 2.1.2 + CUDA Support + Advanced ML Libraries
+"""
+    
+    join_us = """
+## Join the Community
+🌟 **Advanced Stock Prediction** is continuously evolving! Join our active builder's community 👻 
+
+[![Join us on Discord](https://img.shields.io/discord/1109943800132010065?label=Discord&logo=discord&style=flat-square)](https://discord.gg/qdfnvSPcqP) 
+[![Hugging Face](https://img.shields.io/badge/Hugging%20Face-Open%20Source-blue?logo=huggingface&style=flat-square)](https://huggingface.co/TeamTonic) 
+[![GitHub](https://img.shields.io/badge/GitHub-Contribute-green?logo=github&style=flat-square)](https://github.com/Tonic-AI)
+
+🤗Big thanks to Yuvi Sharma and all the folks at huggingface for the community grant 🤗
+"""
+
+    with gr.Blocks(title="Advanced Stock Prediction Analysis", theme=gr.themes.Base()) as demo:
+        with gr.Row():
+            gr.Markdown(title)
+        
+        with gr.Row():
+            with gr.Column(scale=1):
+                with gr.Group():
+                    gr.Markdown(description)
+            with gr.Column(scale=1):
+                with gr.Group():
+                    gr.Markdown(model_info)
+                    gr.Markdown(join_us)
+        
+        gr.Markdown("---")  # Add a separator
         
         # Add market status message with periodic updates
         market_status_display = gr.Markdown(
@@ -2948,6 +2996,34 @@ def create_interface():
         # Note: Market status updates automatically in the background thread every 10 minutes
         # The display can be manually refreshed by users if needed
         
+        # Add simple market status check feature
+        with gr.Accordion("🌎 Global Market Information", open=False)
+            with gr.Column(scale=1):
+                gr.Markdown("### 📊 Quick Market Status Check")
+                # Create user-friendly market choices
+                market_choices = [(config['name'], key) for key, config in MARKET_CONFIGS.items()]
+                market_dropdown = gr.Dropdown(
+                    choices=market_choices,
+                    label="Select Market",
+                    value="US_STOCKS",
+                    info="Choose a market to check its current status"
+                )
+                check_market_btn = gr.Button("🔍 Check Market Status", variant="primary")
+            
+            with gr.Column(scale=2):
+                market_status_result = gr.Markdown(
+                    value="Select a market and click 'Check Market Status' to see current trading status.",
+                    label="Market Status Result"
+                )
+        
+        # Connect the button to the function
+        check_market_btn.click(
+            fn=check_market_status_simple,
+            inputs=[market_dropdown],
+            outputs=[market_status_result]
+        )
+        
+        gr.Markdown("---")  # Add a separator
         
         # Add enhanced market information section
         with gr.Accordion("🌍 Global Market Information", open=False):
@@ -4583,6 +4659,48 @@ def get_enhanced_market_summary() -> Dict:
             }
     
     return market_summary
+
+def check_market_status_simple(market_key: str) -> str:
+    """
+    Simple function to check market status for a specific market.
+    
+    Args:
+        market_key (str): Market key from MARKET_CONFIGS
+        
+    Returns:
+        str: Formatted market status information
+    """
+    try:
+        # Get market status
+        status = market_status_manager.get_status(market_key)
+        
+        # Create a user-friendly display
+        status_emoji = "🟢" if status.is_open else "🔴"
+        status_text = "OPEN" if status.is_open else "CLOSED"
+        
+        result = f"""
+## {status_emoji} {status.market_name} Status: {status_text}
+
+**Current Status:** {status.status_text}
+
+**Market Details:**
+- **Type:** {status.market_type.title()}
+- **Symbol:** {status.market_symbol}
+- **Current Time:** {status.current_time_et}
+- **Last Updated:** {status.last_updated}
+
+**Trading Information:**
+- **Next Trading Day:** {status.next_trading_day}
+- **Time Until Open:** {status.time_until_open}
+- **Time Until Close:** {status.time_until_close}
+
+**Market Description:** {MARKET_CONFIGS[market_key]['description']}
+"""
+        
+        return result
+        
+    except Exception as e:
+        return f"❌ Error checking market status: {str(e)}"
 
 if __name__ == "__main__":
     import signal

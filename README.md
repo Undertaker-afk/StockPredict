@@ -1,23 +1,36 @@
 ---
-title: Stock Predictions
-emoji: 🐢
-colorFrom: yellow
-colorTo: yellow
+title: Advanced Stock Prediction Analysis with Amazon Chronos
+emoji: 🚀
+colorFrom: blue
+colorTo: purple
 sdk: gradio
 sdk_version: 5.33.0
 app_file: app.py
 pinned: false
 license: mit
-short_description: Use Amazon Chronos To Predict Stock Prices
+short_description: Advanced AI-powered stock prediction system with Amazon Chronos foundation model
 tags:
   - mcp-server-track
+  - finance
+  - machine-learning
+  - time-series
+  - stock-prediction
+  - chronos
 ---
 
-# Enhanced Stock Prediction System with Amazon Chronos
+# 🚀 Advanced Stock Prediction Analysis with Amazon Chronos
 
-A comprehensive stock prediction and analysis system that leverages Amazon's Chronos foundation model for time series forecasting, enhanced with advanced covariate data, sentiment analysis, and sophisticated uncertainty calculations.
+A cutting-edge AI-powered stock prediction and analysis system with **580M+ parameters**, designed to analyze and predict stock prices across multiple timeframes. Equipped with **Amazon's Chronos foundation model** and **advanced ensemble methods**, it excels in both short-term trading and long-term investment analysis.
 
-## 🚀 Key Features
+## 🌟 Key Features
+
+### Market Status Monitoring
+- **Real-Time Market Status**: Check if markets are open or closed with a simple click
+- **Multi-Market Support**: Monitor US Stocks, European Markets, Asian Markets, Forex, Crypto, Futures, and Commodities
+- **Timezone-Aware**: Accurate status based on each market's local timezone
+- **Trading Hours**: Detailed information about market hours and next trading days
+- **24/7 Markets**: Support for continuous trading markets like Forex and Crypto
+- **User-Friendly Interface**: Simple dropdown menu and click-to-check functionality
 
 ### Core Prediction Engine
 - **Amazon Chronos Integration**: Uses the state-of-the-art Chronos T5 foundation model for probabilistic time series forecasting
@@ -130,6 +143,41 @@ The application provides a comprehensive web interface with three main tabs:
 1. **Daily Analysis**: Long-term investment analysis (up to 365 days)
 2. **Hourly Analysis**: Medium-term trading analysis (up to 7 days)
 3. **15-Minute Analysis**: Short-term scalping analysis (up to 3 days)
+
+### Market Status Check
+The application includes a simple market status monitoring feature:
+
+1. **Quick Market Status Check**: Located at the top of the interface
+2. **Market Selection**: Dropdown menu with all supported markets:
+   - US Stock Market (NYSE, NASDAQ, AMEX)
+   - European Markets (London, Frankfurt, Paris)
+   - Asian Markets (Tokyo, Hong Kong, Shanghai)
+   - Forex Market (24/7 Global Currency Exchange)
+   - Cryptocurrency Market (24/7 Bitcoin, Ethereum, Altcoins)
+   - US Futures Market (24/7 CME, ICE, CBOT)
+   - Commodities Market (24/7 Gold, Silver, Oil, Natural Gas)
+3. **One-Click Check**: Click "Check Market Status" to get real-time information
+4. **Detailed Information**: Shows current status, trading hours, next trading day, and time until open/close
+
+**Example Output:**
+```
+🟢 US Stock Market Status: OPEN
+
+Current Status: US Stock Market is currently open
+
+Market Details:
+- Type: Stocks
+- Symbol: ^GSPC
+- Current Time: 14:30:00 EDT
+- Last Updated: 2024-01-15 14:30:00 EDT
+
+Trading Information:
+- Next Trading Day: 2024-01-16
+- Time Until Open: N/A (Market is open)
+- Time Until Close: 1h 30m
+
+Market Description: NYSE, NASDAQ, AMEX
+```
 
 ### Advanced Settings
 - **Ensemble Methods**: Enable/disable multi-algorithm ensemble
