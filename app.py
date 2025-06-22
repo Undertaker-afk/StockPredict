@@ -2645,14 +2645,9 @@ def create_interface():
             value=get_market_status_display()
         )
         
-        # Add a hidden timer button to trigger periodic updates
-        timer = gr.Button(visible=False)
-        timer.click(
-            fn=update_market_status,
-            inputs=None,
-            outputs=market_status_display,
-            every=600  # Update every 10 minutes
-        )
+        # Note: Market status updates automatically in the background thread every 10 minutes
+        # The display can be manually refreshed by users if needed
+        
         
         # Add enhanced market information section
         with gr.Accordion("🌍 Global Market Information", open=False):
