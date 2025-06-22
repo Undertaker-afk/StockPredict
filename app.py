@@ -1036,7 +1036,7 @@ def make_prediction_enhanced(symbol: str, timeframe: str = "1d", prediction_days
                 pipe = load_pipeline()
                 
                 # Get the model's device and dtype
-                device = torch.device("cuda:0")  # Force CUDA device
+                device = torch.device("cuda:0")  # Force CUDA device mapping
                 dtype = torch.float16  # Force float16
                 print(f"Model device: {device}")
                 print(f"Model dtype: {dtype}")
@@ -2642,9 +2642,15 @@ def create_interface():
         
         # Add market status message with periodic updates
         market_status_display = gr.Markdown(
-            value=get_market_status_display(),
-            every=600,  # Update every 10 minutes (600 seconds)
-            fn=update_market_status
+            value=get_market_status_display()
+        )
+        
+        # Set up periodic updates for market status
+        market_status_display.every(
+            fn=update_market_status,
+            inputs=None,
+            outputs=market_status_display,
+            every=600  # Update every 10 minutes (600 seconds)
         )
         
         # Add enhanced market information section
