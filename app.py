@@ -1482,6 +1482,18 @@ def make_prediction_enhanced(symbol: str, timeframe: str = "1d", prediction_days
                     print("Warning: Volume prediction failed, using fallback")
                     volume_pred = np.full(len(mean_pred), df['Volume'].iloc[-1])
                     volume_uncertainty = np.full(len(mean_pred), df['Volume'].iloc[-1] * 0.2)
+                elif len(volume_pred) != len(mean_pred):
+                    print(f"Warning: Volume prediction length mismatch. Expected {len(mean_pred)}, got {len(volume_pred)}")
+                    # Pad or truncate to match
+                    if len(volume_pred) < len(mean_pred):
+                        last_vol = volume_pred[-1] if len(volume_pred) > 0 else df['Volume'].iloc[-1]
+                        volume_pred = np.pad(volume_pred, (0, len(mean_pred) - len(volume_pred)), 
+                                           mode='constant', constant_values=last_vol)
+                        volume_uncertainty = np.pad(volume_uncertainty, (0, len(mean_pred) - len(volume_uncertainty)), 
+                                                  mode='constant', constant_values=volume_uncertainty[-1] if len(volume_uncertainty) > 0 else df['Volume'].iloc[-1] * 0.2)
+                    else:
+                        volume_pred = volume_pred[:len(mean_pred)]
+                        volume_uncertainty = volume_uncertainty[:len(mean_pred)]
                 
                 # Predict technical indicators
                 print("Predicting technical indicators...")
@@ -1581,9 +1593,21 @@ def make_prediction_enhanced(symbol: str, timeframe: str = "1d", prediction_days
                 
                 # Ensure volume prediction is properly handled
                 if volume_pred is None or len(volume_pred) == 0:
-                    print("Warning: Volume prediction failed in technical strategy, using fallback")
+                    print("Warning: Volume prediction failed, using fallback")
                     volume_pred = np.full(len(final_pred), df['Volume'].iloc[-1])
                     volume_uncertainty = np.full(len(final_pred), df['Volume'].iloc[-1] * 0.2)
+                elif len(volume_pred) != len(final_pred):
+                    print(f"Warning: Volume prediction length mismatch. Expected {len(final_pred)}, got {len(volume_pred)}")
+                    # Pad or truncate to match
+                    if len(volume_pred) < len(final_pred):
+                        last_vol = volume_pred[-1] if len(volume_pred) > 0 else df['Volume'].iloc[-1]
+                        volume_pred = np.pad(volume_pred, (0, len(final_pred) - len(volume_pred)), 
+                                           mode='constant', constant_values=last_vol)
+                        volume_uncertainty = np.pad(volume_uncertainty, (0, len(final_pred) - len(volume_uncertainty)), 
+                                                  mode='constant', constant_values=volume_uncertainty[-1] if len(volume_uncertainty) > 0 else df['Volume'].iloc[-1] * 0.2)
+                    else:
+                        volume_pred = volume_pred[:len(final_pred)]
+                        volume_uncertainty = volume_uncertainty[:len(final_pred)]
                 
                 # Predict technical indicators
                 print("Predicting technical indicators for technical strategy...")
@@ -1792,33 +1816,138 @@ def make_prediction_enhanced(symbol: str, timeframe: str = "1d", prediction_days
                     row=1, col=1
                 )
         
-        # Add volume
-        fig.add_trace(
-            go.Bar(x=df.index, y=df['Volume'], name='Historical Volume',
-                  marker_color='lightblue', opacity=0.7),
-            row=3, col=1
-        )
-        
-        if volume_pred is not None:
+        # Add volume with better data handling
+        if 'Volume' in df.columns and not df['Volume'].isna().all():
+            # Ensure volume data is numeric and handle any NaN values
+            volume_data = pd.to_numeric(df['Volume'], errors='coerce').fillna(0)
+            
             fig.add_trace(
-                go.Bar(x=pred_dates, y=volume_pred, name='Predicted Volume',
+                go.Bar(x=df.index, y=volume_data, name='Historical Volume',
+                      marker_color='lightblue', opacity=0.7),
+                row=3, col=1
+            )
+        else:
+            print("Warning: No valid volume data available for plotting")
+        
+        # Add predicted volume with better handling
+        if volume_pred is not None and len(volume_pred) > 0:
+            # Ensure volume prediction is numeric and handle any NaN values
+            volume_pred_clean = np.array(volume_pred)
+            volume_pred_clean = np.where(np.isnan(volume_pred_clean), 0, volume_pred_clean)
+            
+            fig.add_trace(
+                go.Bar(x=pred_dates, y=volume_pred_clean, name='Predicted Volume',
                       marker_color='red', opacity=0.7),
                 row=3, col=1
             )
+            
+            # Add volume uncertainty bands if available
+            if volume_uncertainty is not None and len(volume_uncertainty) > 0:
+                volume_uncertainty_clean = np.array(volume_uncertainty)
+                volume_uncertainty_clean = np.where(np.isnan(volume_uncertainty_clean), 0, volume_uncertainty_clean)
+                
+                volume_upper = volume_pred_clean + 2 * volume_uncertainty_clean
+                volume_lower = np.maximum(0, volume_pred_clean - 2 * volume_uncertainty_clean)
+                
+                fig.add_trace(
+                    go.Scatter(x=pred_dates, y=volume_upper, name='Volume Upper Bound',
+                              line=dict(color='red', width=1, dash='dot'), showlegend=False),
+                    row=3, col=1
+                )
+                
+                fig.add_trace(
+                    go.Scatter(x=pred_dates, y=volume_lower, name='Volume Lower Bound',
+                              line=dict(color='red', width=1, dash='dot'), fill='tonexty',
+                              fillcolor='rgba(255,0,0,0.1)', showlegend=False),
+                    row=3, col=1
+                )
         
-        # Add uncertainty analysis
-        fig.add_trace(
-            go.Scatter(x=pred_dates, y=final_uncertainty, name='Prediction Uncertainty',
-                      line=dict(color='green', width=2)),
-            row=4, col=1
-        )
+        # Enhanced uncertainty analysis with confidence bands
+        if final_uncertainty is not None and len(final_uncertainty) > 0:
+            # Ensure uncertainty data is valid
+            uncertainty_clean = np.array(final_uncertainty)
+            uncertainty_clean = np.where(np.isnan(uncertainty_clean), 0, uncertainty_clean)
+            
+            # Create confidence bands
+            confidence_68 = uncertainty_clean  # 1 standard deviation (68% confidence)
+            confidence_95 = 2 * uncertainty_clean  # 2 standard deviations (95% confidence)
+            confidence_99 = 3 * uncertainty_clean  # 3 standard deviations (99% confidence)
+            
+            # Plot uncertainty as confidence bands
+            fig.add_trace(
+                go.Scatter(x=pred_dates, y=final_pred + confidence_95, name='95% Confidence Upper',
+                          line=dict(color='green', width=1, dash='dash'), showlegend=False),
+                row=4, col=1
+            )
+            
+            fig.add_trace(
+                go.Scatter(x=pred_dates, y=final_pred - confidence_95, name='95% Confidence Lower',
+                          line=dict(color='green', width=1, dash='dash'), fill='tonexty',
+                          fillcolor='rgba(0,255,0,0.1)', showlegend=False),
+                row=4, col=1
+            )
+            
+            fig.add_trace(
+                go.Scatter(x=pred_dates, y=final_pred + confidence_68, name='68% Confidence Upper',
+                          line=dict(color='darkgreen', width=1, dash='dot'), showlegend=False),
+                row=4, col=1
+            )
+            
+            fig.add_trace(
+                go.Scatter(x=pred_dates, y=final_pred - confidence_68, name='68% Confidence Lower',
+                          line=dict(color='darkgreen', width=1, dash='dot'), fill='tonexty',
+                          fillcolor='rgba(0,128,0,0.1)', showlegend=False),
+                row=4, col=1
+            )
+            
+            # Add the main prediction line on top
+            fig.add_trace(
+                go.Scatter(x=pred_dates, y=final_pred, name='Prediction with Uncertainty',
+                          line=dict(color='darkgreen', width=3)),
+                row=4, col=1
+            )
+            
+            # Add uncertainty magnitude as a separate line
+            fig.add_trace(
+                go.Scatter(x=pred_dates, y=uncertainty_clean, name='Uncertainty Magnitude',
+                          line=dict(color='orange', width=2)),
+                row=4, col=1
+            )
+        else:
+            print("Warning: No valid uncertainty data available for plotting")
         
-        # Update layout
+        # Update layout with better titles and axis labels
         fig.update_layout(
             title=f'Enhanced Stock Prediction for {symbol}',
-            xaxis_title='Date',
-            height=800,
-            showlegend=True
+            height=1000,  # Increased height for better visibility
+            showlegend=True,
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1
+            )
+        )
+        
+        # Update subplot titles and axis labels
+        fig.update_xaxes(title_text="Date", row=4, col=1)
+        fig.update_yaxes(title_text="Price ($)", row=1, col=1)
+        fig.update_yaxes(title_text="Technical Indicators", row=2, col=1)
+        fig.update_yaxes(title_text="Volume", row=3, col=1)
+        fig.update_yaxes(title_text="Price with Uncertainty ($)", row=4, col=1)
+        
+        # Update subplot titles
+        fig.update_annotations(
+            dict(
+                text="Price Prediction with Technical Indicators",
+                x=0.5,
+                y=0.95,
+                xref="paper",
+                yref="paper",
+                showarrow=False,
+                font=dict(size=16)
+            )
         )
         
         # Create comprehensive trading signals
@@ -1871,6 +2000,18 @@ def make_prediction_enhanced(symbol: str, timeframe: str = "1d", prediction_days
         except Exception as basic_error:
             print(f"Basic trading signals failed: {str(basic_error)}")
             trading_signals['error'] = str(basic_error)
+        
+        # Debug information for volume and uncertainty
+        print(f"Volume data info:")
+        print(f"  Historical volume shape: {df['Volume'].shape if 'Volume' in df.columns else 'No volume column'}")
+        print(f"  Historical volume NaN count: {df['Volume'].isna().sum() if 'Volume' in df.columns else 'N/A'}")
+        print(f"  Predicted volume shape: {volume_pred.shape if volume_pred is not None else 'None'}")
+        print(f"  Predicted volume NaN count: {np.isnan(volume_pred).sum() if volume_pred is not None else 'N/A'}")
+        
+        print(f"Uncertainty data info:")
+        print(f"  Final uncertainty shape: {final_uncertainty.shape if final_uncertainty is not None else 'None'}")
+        print(f"  Final uncertainty NaN count: {np.isnan(final_uncertainty).sum() if final_uncertainty is not None else 'N/A'}")
+        print(f"  Final uncertainty range: [{np.min(final_uncertainty):.4f}, {np.max(final_uncertainty):.4f}]" if final_uncertainty is not None else 'N/A')
         
         return trading_signals, fig
         
