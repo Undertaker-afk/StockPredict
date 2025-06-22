@@ -37,7 +37,7 @@ try:
     from sklearn.linear_model import LinearRegression, Ridge, Lasso
     from sklearn.svm import SVR
     from sklearn.neural_network import MLPRegressor
-    from sklearn.model_selection import TimeSeriesSplit
+    from sklearn.model_selection import TimeSeriesSplit, cross_val_score
     from sklearn.metrics import mean_squared_error, mean_absolute_error
     ENSEMBLE_AVAILABLE = True
 except ImportError:
@@ -1315,20 +1315,30 @@ def make_prediction_enhanced(symbol: str, timeframe: str = "1d", prediction_days
                 # Apply continuity correction
                 last_actual = df['Close'].iloc[-1]
                 first_pred = mean_pred[0]
-                if abs(first_pred - last_actual) > max(1e-6, 0.05 * abs(last_actual)):
-                    print(f"Warning: Discontinuity detected between last actual ({last_actual}) and first prediction ({first_pred})")
-                    mean_pred[0] = last_actual
-                    # Adjust subsequent predictions to maintain trend with optional smoothing
+                discontinuity_threshold = max(1e-6, 0.02 * abs(last_actual))  # 2% threshold
+                
+                if abs(first_pred - last_actual) > discontinuity_threshold:
+                    print(f"Warning: Discontinuity detected between last actual ({last_actual:.4f}) and first prediction ({first_pred:.4f})")
+                    print(f"Discontinuity magnitude: {abs(first_pred - last_actual):.4f} ({abs(first_pred - last_actual)/last_actual*100:.2f}%)")
+                    
+                    # Apply smooth continuity correction
                     if len(mean_pred) > 1:
                         # Calculate the trend from the original prediction
                         original_trend = mean_pred[1] - first_pred
-                        # Apply the same trend but starting from the last actual value
-                        for i in range(1, len(mean_pred)):
-                            mean_pred[i] = last_actual + original_trend * i
+                        
+                        # Apply a smooth transition over the first few predictions
+                        transition_length = min(3, len(mean_pred))
+                        for i in range(transition_length):
+                            # Gradually transition from last actual to predicted trend
+                            transition_factor = i / transition_length
+                            mean_pred[i] = last_actual + original_trend * i * transition_factor
                         
                         # Apply financial smoothing if enabled
                         if use_smoothing:
                             mean_pred = apply_financial_smoothing(mean_pred, smoothing_type, smoothing_window, smoothing_alpha, 3, use_smoothing)
+                    else:
+                        # Single prediction case
+                        mean_pred[0] = last_actual
                 
                 # If we had to limit the prediction length, extend the prediction recursively
                 if actual_prediction_length < trim_length:
@@ -1404,15 +1414,24 @@ def make_prediction_enhanced(symbol: str, timeframe: str = "1d", prediction_days
                             (next_quantiles[0, :, 2] - next_quantiles[0, :, 0]) / (2 * 1.645))
                         
                         # Check for discontinuity and apply continuity correction
-                        if abs(next_mean_pred[0] - extended_mean_pred[-1]) > max(1e-6, 0.05 * abs(extended_mean_pred[-1])):
-                            print(f"Warning: Discontinuity detected between last prediction ({extended_mean_pred[-1]}) and next prediction ({next_mean_pred[0]})")
-                            # Apply continuity correction to first prediction
-                            next_mean_pred[0] = extended_mean_pred[-1]
-                            # Adjust subsequent predictions to maintain trend
+                        if abs(next_mean_pred[0] - extended_mean_pred[-1]) > max(1e-6, 0.02 * abs(extended_mean_pred[-1])):
+                            print(f"Warning: Discontinuity detected between last prediction ({extended_mean_pred[-1]:.4f}) and next prediction ({next_mean_pred[0]:.4f})")
+                            print(f"Extension discontinuity magnitude: {abs(next_mean_pred[0] - extended_mean_pred[-1]):.4f}")
+                            
+                            # Apply smooth continuity correction
                             if len(next_mean_pred) > 1:
+                                # Calculate the trend from the original prediction
                                 original_trend = next_mean_pred[1] - next_mean_pred[0]
-                                for i in range(1, len(next_mean_pred)):
-                                    next_mean_pred[i] = extended_mean_pred[-1] + original_trend * i
+                                
+                                # Apply a smooth transition over the first few predictions
+                                transition_length = min(3, len(next_mean_pred))
+                                for i in range(transition_length):
+                                    # Gradually transition from last prediction to predicted trend
+                                    transition_factor = i / transition_length
+                                    next_mean_pred[i] = extended_mean_pred[-1] + original_trend * i * transition_factor
+                            else:
+                                # Single prediction case
+                                next_mean_pred[0] = extended_mean_pred[-1]
                         
                         # Apply financial smoothing if enabled
                         if use_smoothing and len(next_mean_pred) > 1:
@@ -3738,6 +3757,27 @@ def create_enhanced_ensemble_model(df: pd.DataFrame, covariate_data: Dict,
             bb_position = bb_position.fillna(0.5)  # Fill NaN with neutral position
             features.append(bb_position.values)
         
+        # Add lagged price features to capture temporal patterns
+        for lag in [1, 2, 3, 5, 10]:
+            if len(target) > lag:
+                lagged_prices = np.pad(target[:-lag], (lag, 0), mode='edge')
+                features.append(lagged_prices)
+        
+        # Add rolling statistics to capture trends
+        for window in [5, 10, 20]:
+            if len(target) >= window:
+                rolling_mean = pd.Series(target).rolling(window=window, min_periods=1).mean().values
+                rolling_std = pd.Series(target).rolling(window=window, min_periods=1).std().fillna(0).values
+                features.append(rolling_mean)
+                features.append(rolling_std)
+        
+        # Add price momentum features
+        if len(target) > 1:
+            price_momentum_1d = np.pad(np.diff(target), (1, 0), mode='constant', constant_values=0)
+            price_momentum_5d = np.pad(np.diff(target, n=5), (5, 0), mode='constant', constant_values=0)
+            features.append(price_momentum_1d)
+            features.append(price_momentum_5d)
+        
         # Add covariate data
         if 'market_indices' in covariate_data:
             for col in covariate_data['market_indices'].columns:
@@ -3885,22 +3925,60 @@ def create_enhanced_ensemble_model(df: pd.DataFrame, covariate_data: Dict,
         
         for name, model in models.items():
             try:
-                # Use expanding window for time series
-                train_size = int(0.8 * len(X))
-                X_train, X_test = X[:train_size], X[train_size:]
-                y_train, y_test = y[:train_size], y[train_size:]
+                # Use ALL available data for training (no train/test split)
+                # This maximizes the use of historical information
+                print(f"Training {name} on all {len(X)} data points...")
                 
-                # Train model
-                model.fit(X_train, y_train)
+                # Train model on all available data
+                model.fit(X, y)
                 
-                # Make predictions
-                if len(X_test) > 0:
-                    pred = model.predict(X_test)
-                    mse = mean_squared_error(y_test, pred)
-                    uncertainty = np.sqrt(mse) * np.ones(prediction_days)
+                # Generate predictions for the full prediction period
+                # Use the most recent data points to generate future predictions
+                if len(X) >= prediction_days:
+                    # Use the last prediction_days data points for prediction
+                    # This ensures we're using the most recent patterns and trends
+                    X_pred = X[-prediction_days:]
+                    pred = model.predict(X_pred)
+                    print(f"  {name}: Generated {len(pred)} predictions using last {prediction_days} data points")
                 else:
-                    # Use last available data for prediction
-                    pred = model.predict(X[-prediction_days:])
+                    # If we don't have enough data, use all available data and extrapolate
+                    pred = model.predict(X)
+                    print(f"  {name}: Generated {len(pred)} predictions using all {len(X)} data points")
+                    
+                    if len(pred) < prediction_days:
+                        # Extend with trend-based predictions
+                        if len(pred) > 0:
+                            # Calculate trend from last few predictions
+                            trend_window = min(5, len(pred))
+                            if trend_window > 1:
+                                trend = np.mean(np.diff(pred[-trend_window:]))
+                            else:
+                                trend = 0
+                            
+                            # Extend predictions using the trend
+                            last_pred = pred[-1] if len(pred) > 0 else y[-1]
+                            for i in range(len(pred), prediction_days):
+                                next_pred = last_pred + trend
+                                pred = np.append(pred, next_pred)
+                                last_pred = next_pred
+                            
+                            print(f"  {name}: Extended to {len(pred)} predictions using trend extrapolation")
+                        else:
+                            # No predictions available, use simple extrapolation
+                            last_price = y[-1]
+                            pred = np.array([last_price * (1 + 0.001 * i) for i in range(prediction_days)])
+                            print(f"  {name}: Generated {len(pred)} predictions using simple extrapolation")
+                
+                # Calculate uncertainty using cross-validation on all data
+                # This gives us a better estimate of model performance
+                try:
+                    cv_scores = cross_val_score(model, X, y, cv=min(5, len(X)//10), scoring='neg_mean_squared_error')
+                    mse = -np.mean(cv_scores)
+                    uncertainty = np.sqrt(mse) * np.ones(prediction_days)
+                    print(f"  {name} CV MSE: {mse:.6f}")
+                except Exception as cv_error:
+                    print(f"  {name} CV failed, using fallback uncertainty: {str(cv_error)}")
+                    # Fallback uncertainty based on historical volatility
                     uncertainty = np.std(y) * np.ones(prediction_days)
                 
                 # Ensure prediction is the right length
@@ -3910,12 +3988,25 @@ def create_enhanced_ensemble_model(df: pd.DataFrame, covariate_data: Dict,
                         pred = pred[:prediction_days]
                         uncertainty = uncertainty[:prediction_days]
                     else:
-                        # Extend with last value
-                        last_val = pred[-1] if len(pred) > 0 else y[-1]
-                        pred = np.pad(pred, (0, prediction_days - len(pred)), 
-                                    mode='constant', constant_values=last_val)
-                        uncertainty = np.pad(uncertainty, (0, prediction_days - len(uncertainty)), 
-                                           mode='constant', constant_values=uncertainty[-1] if len(uncertainty) > 0 else np.std(y))
+                        # Extend with trend-based predictions
+                        if len(pred) > 0:
+                            # Calculate trend from last few predictions
+                            trend_window = min(5, len(pred))
+                            if trend_window > 1:
+                                trend = np.mean(np.diff(pred[-trend_window:]))
+                            else:
+                                trend = 0
+                            
+                            # Extend predictions using the trend
+                            last_pred = pred[-1] if len(pred) > 0 else y[-1]
+                            for i in range(len(pred), prediction_days):
+                                next_pred = last_pred + trend
+                                pred = np.append(pred, next_pred)
+                                last_pred = next_pred
+                        else:
+                            # No predictions available, use simple extrapolation
+                            last_price = y[-1]
+                            pred = np.array([last_price * (1 + 0.001 * i) for i in range(prediction_days)])
                 
                 # Validate prediction
                 if len(pred) == prediction_days and len(uncertainty) == prediction_days:
@@ -3939,10 +4030,36 @@ def create_enhanced_ensemble_model(df: pd.DataFrame, covariate_data: Dict,
         
         # Combine predictions using weighted average
         weights = {}
+        model_performances = {}
+        
         for name in predictions.keys():
             if name in uncertainties:
-                # Weight inversely proportional to uncertainty
-                weights[name] = 1.0 / np.mean(uncertainties[name])
+                # Calculate model performance on training data
+                try:
+                    # Use cross-validation score as performance metric
+                    cv_scores = cross_val_score(models[name], X, y, cv=min(5, len(X)//10), scoring='r2')
+                    performance = np.mean(cv_scores)
+                    model_performances[name] = performance
+                    
+                    # Weight based on both performance and uncertainty
+                    # Higher performance and lower uncertainty = higher weight
+                    uncertainty_factor = 1.0 / np.mean(uncertainties[name])
+                    performance_factor = max(0, performance)  # Ensure non-negative
+                    
+                    # Combine factors (you can adjust the balance)
+                    weights[name] = (0.7 * performance_factor + 0.3 * uncertainty_factor)
+                    
+                    print(f"  {name}: Performance={performance:.4f}, Uncertainty={np.mean(uncertainties[name]):.4f}, Weight={weights[name]:.4f}")
+                    
+                except Exception as e:
+                    print(f"  {name}: Performance calculation failed, using uncertainty only: {str(e)}")
+                    # Fallback to uncertainty-based weighting
+                    weights[name] = 1.0 / np.mean(uncertainties[name])
+                    model_performances[name] = 0.0
+            else:
+                # Equal weight if no uncertainty available
+                weights[name] = 1.0
+                model_performances[name] = 0.0
         
         # Normalize weights
         total_weight = sum(weights.values())
