@@ -6,9 +6,9 @@ colorTo: purple
 sdk: gradio
 sdk_version: 5.33.0
 app_file: app.py
-pinned: false
+pinned: true
 license: mit
-short_description: Advanced AI-powered stock prediction system with Amazon Chronos foundation model
+short_description: stock prediction with Amazon/Chronos 
 tags:
   - mcp-server-track
   - finance
@@ -16,6 +16,11 @@ tags:
   - time-series
   - stock-prediction
   - chronos
+  - market
+  - yfinance
+  - amazon
+  - forecasting
+  - ensemble
 ---
 
 # 🚀 Advanced Stock Prediction Analysis with Amazon Chronos
