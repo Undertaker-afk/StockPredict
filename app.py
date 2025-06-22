@@ -1666,11 +1666,11 @@ def make_prediction_enhanced(symbol: str, timeframe: str = "1d", prediction_days
         else:  # 15m
             pred_dates = pd.date_range(start=last_date + timedelta(minutes=15), periods=prediction_days * 96)
         
-        # Create enhanced visualization
-        fig = make_subplots(rows=4, cols=1, 
+        # Create enhanced visualization with uncertainties integrated
+        fig = make_subplots(rows=3, cols=1, 
                            shared_xaxes=True,
                            vertical_spacing=0.05,
-                           subplot_titles=('Price Prediction', 'Technical Indicators', 'Volume', 'Uncertainty Analysis'))
+                           subplot_titles=('Price Prediction with Uncertainty', 'Technical Indicators with Uncertainty', 'Volume with Uncertainty'))
         
         # Add historical price
         fig.add_trace(
@@ -1679,104 +1679,51 @@ def make_prediction_enhanced(symbol: str, timeframe: str = "1d", prediction_days
             row=1, col=1
         )
         
-        # Add predicted price with uncertainty bands
+        # Add predicted price with integrated uncertainty bands
         fig.add_trace(
             go.Scatter(x=pred_dates, y=final_pred, name='Predicted Price',
-                      line=dict(color='red', width=2)),
+                      line=dict(color='red', width=3)),
             row=1, col=1
         )
         
-        # Add uncertainty bands
-        upper_band = final_pred + 2 * final_uncertainty
-        lower_band = final_pred - 2 * final_uncertainty
-        
-        fig.add_trace(
-            go.Scatter(x=pred_dates, y=upper_band, name='Upper Bound (95%)',
-                      line=dict(color='red', width=1, dash='dash'), showlegend=False),
-            row=1, col=1
-        )
-        
-        fig.add_trace(
-            go.Scatter(x=pred_dates, y=lower_band, name='Lower Bound (95%)',
-                      line=dict(color='red', width=1, dash='dash'), fill='tonexty',
-                      fillcolor='rgba(255,0,0,0.1)', showlegend=False),
-            row=1, col=1
-        )
-        
-        # Add technical indicators
-        fig.add_trace(
-            go.Scatter(x=df.index, y=df['RSI'], name='RSI (Historical)',
-                      line=dict(color='purple', width=1)),
-            row=2, col=1
-        )
-        
-        # Add predicted RSI if available
-        if 'RSI' in technical_predictions:
+        # Add price uncertainty bands on the same subplot
+        if final_uncertainty is not None and len(final_uncertainty) > 0:
+            uncertainty_clean = np.array(final_uncertainty)
+            uncertainty_clean = np.where(np.isnan(uncertainty_clean), 0, uncertainty_clean)
+            
+            # Create confidence bands
+            confidence_68 = uncertainty_clean  # 1 standard deviation (68% confidence)
+            confidence_95 = 2 * uncertainty_clean  # 2 standard deviations (95% confidence)
+            
+            # Plot 95% confidence bands
             fig.add_trace(
-                go.Scatter(x=pred_dates, y=technical_predictions['RSI'], name='RSI (Predicted)',
-                          line=dict(color='purple', width=2, dash='dash')),
-                row=2, col=1
+                go.Scatter(x=pred_dates, y=final_pred + confidence_95, name='95% Confidence Upper',
+                          line=dict(color='red', width=1, dash='dash'), showlegend=False),
+                row=1, col=1
             )
             
-            # Add RSI uncertainty bands
-            if 'RSI' in technical_uncertainties:
-                rsi_upper = technical_predictions['RSI'] + 2 * technical_uncertainties['RSI']
-                rsi_lower = technical_predictions['RSI'] - 2 * technical_uncertainties['RSI']
-                
-                fig.add_trace(
-                    go.Scatter(x=pred_dates, y=rsi_upper, name='RSI Upper Bound',
-                              line=dict(color='purple', width=1, dash='dot'), showlegend=False),
-                    row=2, col=1
-                )
-                
-                fig.add_trace(
-                    go.Scatter(x=pred_dates, y=rsi_lower, name='RSI Lower Bound',
-                              line=dict(color='purple', width=1, dash='dot'), fill='tonexty',
-                              fillcolor='rgba(128,0,128,0.1)', showlegend=False),
-                    row=2, col=1
-                )
-        
-        fig.add_trace(
-            go.Scatter(x=df.index, y=df['MACD'], name='MACD (Historical)',
-                      line=dict(color='orange', width=1)),
-            row=2, col=1
-        )
-        
-        # Add predicted MACD if available
-        if 'MACD' in technical_predictions:
             fig.add_trace(
-                go.Scatter(x=pred_dates, y=technical_predictions['MACD'], name='MACD (Predicted)',
-                          line=dict(color='orange', width=2, dash='dash')),
-                row=2, col=1
+                go.Scatter(x=pred_dates, y=final_pred - confidence_95, name='95% Confidence Lower',
+                          line=dict(color='red', width=1, dash='dash'), fill='tonexty',
+                          fillcolor='rgba(255,0,0,0.1)', showlegend=False),
+                row=1, col=1
             )
             
-            # Add MACD signal line if available
-            if 'MACD_Signal' in technical_predictions:
-                fig.add_trace(
-                    go.Scatter(x=pred_dates, y=technical_predictions['MACD_Signal'], name='MACD Signal (Predicted)',
-                              line=dict(color='red', width=1, dash='dash')),
-                    row=2, col=1
-                )
+            # Plot 68% confidence bands
+            fig.add_trace(
+                go.Scatter(x=pred_dates, y=final_pred + confidence_68, name='68% Confidence Upper',
+                          line=dict(color='darkred', width=1, dash='dot'), showlegend=False),
+                row=1, col=1
+            )
             
-            # Add MACD uncertainty bands
-            if 'MACD' in technical_uncertainties:
-                macd_upper = technical_predictions['MACD'] + 2 * technical_uncertainties['MACD']
-                macd_lower = technical_predictions['MACD'] - 2 * technical_uncertainties['MACD']
-                
-                fig.add_trace(
-                    go.Scatter(x=pred_dates, y=macd_upper, name='MACD Upper Bound',
-                              line=dict(color='orange', width=1, dash='dot'), showlegend=False),
-                    row=2, col=1
-                )
-                
-                fig.add_trace(
-                    go.Scatter(x=pred_dates, y=macd_lower, name='MACD Lower Bound',
-                              line=dict(color='orange', width=1, dash='dot'), fill='tonexty',
-                              fillcolor='rgba(255,165,0,0.1)', showlegend=False),
-                    row=2, col=1
-                )
+            fig.add_trace(
+                go.Scatter(x=pred_dates, y=final_pred - confidence_68, name='68% Confidence Lower',
+                          line=dict(color='darkred', width=1, dash='dot'), fill='tonexty',
+                          fillcolor='rgba(139,0,0,0.1)', showlegend=False),
+                row=1, col=1
+            )
         
-        # Add Bollinger Bands if available
+        # Add Bollinger Bands if available (on price subplot)
         if 'BB_Upper' in df.columns and 'BB_Middle' in df.columns and 'BB_Lower' in df.columns:
             fig.add_trace(
                 go.Scatter(x=df.index, y=df['BB_Upper'], name='BB Upper (Historical)',
@@ -1816,9 +1763,81 @@ def make_prediction_enhanced(symbol: str, timeframe: str = "1d", prediction_days
                     row=1, col=1
                 )
         
-        # Add volume with better data handling
+        # Add technical indicators with their uncertainties on the same subplot
+        # RSI with uncertainty
+        fig.add_trace(
+            go.Scatter(x=df.index, y=df['RSI'], name='RSI (Historical)',
+                      line=dict(color='purple', width=1)),
+            row=2, col=1
+        )
+        
+        if 'RSI' in technical_predictions:
+            fig.add_trace(
+                go.Scatter(x=pred_dates, y=technical_predictions['RSI'], name='RSI (Predicted)',
+                          line=dict(color='purple', width=2, dash='dash')),
+                row=2, col=1
+            )
+            
+            # Add RSI uncertainty bands
+            if 'RSI' in technical_uncertainties:
+                rsi_upper = technical_predictions['RSI'] + 2 * technical_uncertainties['RSI']
+                rsi_lower = technical_predictions['RSI'] - 2 * technical_uncertainties['RSI']
+                
+                fig.add_trace(
+                    go.Scatter(x=pred_dates, y=rsi_upper, name='RSI Upper Bound',
+                              line=dict(color='purple', width=1, dash='dot'), showlegend=False),
+                    row=2, col=1
+                )
+                
+                fig.add_trace(
+                    go.Scatter(x=pred_dates, y=rsi_lower, name='RSI Lower Bound',
+                              line=dict(color='purple', width=1, dash='dot'), fill='tonexty',
+                              fillcolor='rgba(128,0,128,0.1)', showlegend=False),
+                    row=2, col=1
+                )
+        
+        # MACD with uncertainty
+        fig.add_trace(
+            go.Scatter(x=df.index, y=df['MACD'], name='MACD (Historical)',
+                      line=dict(color='orange', width=1)),
+            row=2, col=1
+        )
+        
+        if 'MACD' in technical_predictions:
+            fig.add_trace(
+                go.Scatter(x=pred_dates, y=technical_predictions['MACD'], name='MACD (Predicted)',
+                          line=dict(color='orange', width=2, dash='dash')),
+                row=2, col=1
+            )
+            
+            # Add MACD signal line if available
+            if 'MACD_Signal' in technical_predictions:
+                fig.add_trace(
+                    go.Scatter(x=pred_dates, y=technical_predictions['MACD_Signal'], name='MACD Signal (Predicted)',
+                              line=dict(color='red', width=1, dash='dash')),
+                    row=2, col=1
+                )
+            
+            # Add MACD uncertainty bands
+            if 'MACD' in technical_uncertainties:
+                macd_upper = technical_predictions['MACD'] + 2 * technical_uncertainties['MACD']
+                macd_lower = technical_predictions['MACD'] - 2 * technical_uncertainties['MACD']
+                
+                fig.add_trace(
+                    go.Scatter(x=pred_dates, y=macd_upper, name='MACD Upper Bound',
+                              line=dict(color='orange', width=1, dash='dot'), showlegend=False),
+                    row=2, col=1
+                )
+                
+                fig.add_trace(
+                    go.Scatter(x=pred_dates, y=macd_lower, name='MACD Lower Bound',
+                              line=dict(color='orange', width=1, dash='dot'), fill='tonexty',
+                              fillcolor='rgba(255,165,0,0.1)', showlegend=False),
+                    row=2, col=1
+                )
+        
+        # Add volume with uncertainty on the same subplot
         if 'Volume' in df.columns and not df['Volume'].isna().all():
-            # Ensure volume data is numeric and handle any NaN values
             volume_data = pd.to_numeric(df['Volume'], errors='coerce').fillna(0)
             
             fig.add_trace(
@@ -1862,64 +1881,27 @@ def make_prediction_enhanced(symbol: str, timeframe: str = "1d", prediction_days
                     row=3, col=1
                 )
         
-        # Enhanced uncertainty analysis with confidence bands
-        if final_uncertainty is not None and len(final_uncertainty) > 0:
-            # Ensure uncertainty data is valid
-            uncertainty_clean = np.array(final_uncertainty)
-            uncertainty_clean = np.where(np.isnan(uncertainty_clean), 0, uncertainty_clean)
-            
-            # Create confidence bands
-            confidence_68 = uncertainty_clean  # 1 standard deviation (68% confidence)
-            confidence_95 = 2 * uncertainty_clean  # 2 standard deviations (95% confidence)
-            confidence_99 = 3 * uncertainty_clean  # 3 standard deviations (99% confidence)
-            
-            # Plot uncertainty as confidence bands
-            fig.add_trace(
-                go.Scatter(x=pred_dates, y=final_pred + confidence_95, name='95% Confidence Upper',
-                          line=dict(color='green', width=1, dash='dash'), showlegend=False),
-                row=4, col=1
-            )
-            
-            fig.add_trace(
-                go.Scatter(x=pred_dates, y=final_pred - confidence_95, name='95% Confidence Lower',
-                          line=dict(color='green', width=1, dash='dash'), fill='tonexty',
-                          fillcolor='rgba(0,255,0,0.1)', showlegend=False),
-                row=4, col=1
-            )
-            
-            fig.add_trace(
-                go.Scatter(x=pred_dates, y=final_pred + confidence_68, name='68% Confidence Upper',
-                          line=dict(color='darkgreen', width=1, dash='dot'), showlegend=False),
-                row=4, col=1
-            )
-            
-            fig.add_trace(
-                go.Scatter(x=pred_dates, y=final_pred - confidence_68, name='68% Confidence Lower',
-                          line=dict(color='darkgreen', width=1, dash='dot'), fill='tonexty',
-                          fillcolor='rgba(0,128,0,0.1)', showlegend=False),
-                row=4, col=1
-            )
-            
-            # Add the main prediction line on top
-            fig.add_trace(
-                go.Scatter(x=pred_dates, y=final_pred, name='Prediction with Uncertainty',
-                          line=dict(color='darkgreen', width=3)),
-                row=4, col=1
-            )
-            
-            # Add uncertainty magnitude as a separate line
-            fig.add_trace(
-                go.Scatter(x=pred_dates, y=uncertainty_clean, name='Uncertainty Magnitude',
-                          line=dict(color='orange', width=2)),
-                row=4, col=1
-            )
-        else:
-            print("Warning: No valid uncertainty data available for plotting")
+        # Add reference lines for technical indicators
+        # RSI overbought/oversold lines
+        fig.add_hline(y=70, line_dash="dash", line_color="red", 
+                     annotation_text="Overbought (70)", row=2, col=1)
+        fig.add_hline(y=30, line_dash="dash", line_color="green", 
+                     annotation_text="Oversold (30)", row=2, col=1)
+        
+        # MACD zero line
+        fig.add_hline(y=0, line_dash="dash", line_color="black", 
+                     annotation_text="MACD Zero", row=2, col=1)
+        
+        # Add volume reference line (average volume)
+        if 'Volume' in df.columns and not df['Volume'].isna().all():
+            avg_volume = df['Volume'].mean()
+            fig.add_hline(y=avg_volume, line_dash="dash", line_color="blue", 
+                         annotation_text=f"Avg Volume: {avg_volume:,.0f}", row=3, col=1)
         
         # Update layout with better titles and axis labels
         fig.update_layout(
             title=f'Enhanced Stock Prediction for {symbol}',
-            height=1000,  # Increased height for better visibility
+            height=900,  # Adjusted height for 3 subplots
             showlegend=True,
             legend=dict(
                 orientation="h",
@@ -1931,16 +1913,15 @@ def make_prediction_enhanced(symbol: str, timeframe: str = "1d", prediction_days
         )
         
         # Update subplot titles and axis labels
-        fig.update_xaxes(title_text="Date", row=4, col=1)
+        fig.update_xaxes(title_text="Date", row=3, col=1)
         fig.update_yaxes(title_text="Price ($)", row=1, col=1)
         fig.update_yaxes(title_text="Technical Indicators", row=2, col=1)
         fig.update_yaxes(title_text="Volume", row=3, col=1)
-        fig.update_yaxes(title_text="Price with Uncertainty ($)", row=4, col=1)
         
         # Update subplot titles
         fig.update_annotations(
             dict(
-                text="Price Prediction with Technical Indicators",
+                text="Price Prediction with Uncertainty",
                 x=0.5,
                 y=0.95,
                 xref="paper",
