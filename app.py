@@ -3722,24 +3722,62 @@ def create_enhanced_ensemble_model(df: pd.DataFrame, covariate_data: Dict,
         # Add covariate data
         if 'market_indices' in covariate_data:
             for col in covariate_data['market_indices'].columns:
-                if len(covariate_data['market_indices'][col]) == len(target):
-                    features.append(covariate_data['market_indices'][col].values)
+                covariate_series = covariate_data['market_indices'][col]
+                # Align covariate data to target length
+                if len(covariate_series) == len(target):
+                    features.append(covariate_series.values)
+                elif len(covariate_series) > len(target):
+                    # Truncate to target length
+                    features.append(covariate_series.tail(len(target)).values)
+                else:
+                    # Pad with last value
+                    padded_values = np.pad(covariate_series.values, 
+                                         (len(target) - len(covariate_series), 0), 
+                                         mode='edge')
+                    features.append(padded_values)
         
         if 'economic_indicators' in covariate_data:
             for col in covariate_data['economic_indicators'].columns:
-                if len(covariate_data['economic_indicators'][col]) == len(target):
-                    features.append(covariate_data['economic_indicators'][col].values)
+                covariate_series = covariate_data['economic_indicators'][col]
+                # Align covariate data to target length
+                if len(covariate_series) == len(target):
+                    features.append(covariate_series.values)
+                elif len(covariate_series) > len(target):
+                    # Truncate to target length
+                    features.append(covariate_series.tail(len(target)).values)
+                else:
+                    # Pad with last value
+                    padded_values = np.pad(covariate_series.values, 
+                                         (len(target) - len(covariate_series), 0), 
+                                         mode='edge')
+                    features.append(padded_values)
         
         # Create feature matrix
         X = np.column_stack(features)
         y = target
+        
+        # Validate feature matrix
+        print(f"Feature matrix shape: {X.shape}, Target shape: {y.shape}")
+        
+        # Ensure all features have the same length
+        feature_lengths = [len(feature) for feature in features]
+        if len(set(feature_lengths)) > 1:
+            print(f"Warning: Feature lengths are inconsistent: {feature_lengths}")
+            # Find the minimum length and truncate all features
+            min_length = min(feature_lengths)
+            X = X[:min_length]
+            y = y[:min_length]
+            print(f"Truncated to minimum length: {min_length}")
         
         # Remove any NaN values
         mask = ~np.isnan(X).any(axis=1) & ~np.isnan(y)
         X = X[mask]
         y = y[mask]
         
+        print(f"After NaN removal - X shape: {X.shape}, y shape: {y.shape}")
+        
         if len(X) < 50:  # Need sufficient data
+            print(f"Insufficient data after preprocessing: {len(X)} samples")
             return np.array([]), np.array([])
         
         # Initialize models
@@ -3776,8 +3814,27 @@ def create_enhanced_ensemble_model(df: pd.DataFrame, covariate_data: Dict,
                     pred = model.predict(X[-prediction_days:])
                     uncertainty = np.std(y) * np.ones(prediction_days)
                 
-                predictions[name] = pred
-                uncertainties[name] = uncertainty
+                # Ensure prediction is the right length
+                if len(pred) != prediction_days:
+                    print(f"Warning: {name} produced {len(pred)} predictions, expected {prediction_days}")
+                    if len(pred) > prediction_days:
+                        pred = pred[:prediction_days]
+                        uncertainty = uncertainty[:prediction_days]
+                    else:
+                        # Extend with last value
+                        last_val = pred[-1] if len(pred) > 0 else y[-1]
+                        pred = np.pad(pred, (0, prediction_days - len(pred)), 
+                                    mode='constant', constant_values=last_val)
+                        uncertainty = np.pad(uncertainty, (0, prediction_days - len(uncertainty)), 
+                                           mode='constant', constant_values=uncertainty[-1] if len(uncertainty) > 0 else np.std(y))
+                
+                # Validate prediction
+                if len(pred) == prediction_days and len(uncertainty) == prediction_days:
+                    predictions[name] = pred
+                    uncertainties[name] = uncertainty
+                else:
+                    print(f"Warning: {name} prediction validation failed. Skipping.")
+                    continue
                 
             except Exception as e:
                 print(f"Error training {name}: {str(e)}")
@@ -3785,6 +3842,11 @@ def create_enhanced_ensemble_model(df: pd.DataFrame, covariate_data: Dict,
         
         if not predictions:
             return np.array([]), np.array([])
+        
+        # Debug: Print prediction lengths
+        print(f"Ensemble model debugging - Expected prediction_days: {prediction_days}")
+        for name, pred in predictions.items():
+            print(f"  {name}: prediction length = {len(pred)}, uncertainty length = {len(uncertainties.get(name, []))}")
         
         # Combine predictions using weighted average
         weights = {}
@@ -3807,14 +3869,64 @@ def create_enhanced_ensemble_model(df: pd.DataFrame, covariate_data: Dict,
         
         for name, pred in predictions.items():
             if name in weights:
-                ensemble_pred += weights[name] * pred[:prediction_days]
-                ensemble_uncertainty += weights[name] * uncertainties[name][:prediction_days]
+                # Ensure prediction is the right length
+                pred_array = np.array(pred)
+                uncertainty_array = np.array(uncertainties[name])
+                
+                # Handle different prediction lengths
+                if len(pred_array) >= prediction_days:
+                    # Truncate to prediction_days
+                    pred_array = pred_array[:prediction_days]
+                    uncertainty_array = uncertainty_array[:prediction_days]
+                elif len(pred_array) < prediction_days:
+                    # Extend with the last value
+                    last_pred = pred_array[-1] if len(pred_array) > 0 else 0
+                    last_uncertainty = uncertainty_array[-1] if len(uncertainty_array) > 0 else 1.0
+                    
+                    # Pad with last values
+                    pred_array = np.pad(pred_array, (0, prediction_days - len(pred_array)), 
+                                      mode='constant', constant_values=last_pred)
+                    uncertainty_array = np.pad(uncertainty_array, (0, prediction_days - len(uncertainty_array)), 
+                                             mode='constant', constant_values=last_uncertainty)
+                
+                # Ensure arrays are the correct shape
+                if len(pred_array) != prediction_days:
+                    print(f"Warning: {name} prediction length mismatch. Expected {prediction_days}, got {len(pred_array)}")
+                    continue
+                
+                if len(uncertainty_array) != prediction_days:
+                    print(f"Warning: {name} uncertainty length mismatch. Expected {prediction_days}, got {len(uncertainty_array)}")
+                    continue
+                
+                # Add weighted contribution
+                ensemble_pred += weights[name] * pred_array
+                ensemble_uncertainty += weights[name] * uncertainty_array
         
         return ensemble_pred, ensemble_uncertainty
     
     except Exception as e:
         print(f"Enhanced ensemble model error: {str(e)}")
-        return np.array([]), np.array([])
+        print("Falling back to simple ensemble prediction...")
+        
+        # Fallback: Simple ensemble using basic models
+        try:
+            # Use simple linear regression as fallback
+            X = np.arange(len(df)).reshape(-1, 1)
+            y = df['Close'].values
+            
+            # Simple linear trend
+            slope = np.polyfit(X.flatten(), y, 1)[0]
+            last_price = y[-1]
+            
+            # Generate simple predictions
+            ensemble_pred = np.array([last_price + slope * i for i in range(1, prediction_days + 1)])
+            ensemble_uncertainty = np.std(y) * np.ones(prediction_days)
+            
+            return ensemble_pred, ensemble_uncertainty
+            
+        except Exception as fallback_error:
+            print(f"Fallback ensemble also failed: {str(fallback_error)}")
+            return np.array([]), np.array([])
 
 def calculate_volume_prediction_enhanced(df: pd.DataFrame, price_prediction: np.ndarray, 
                                        covariate_data: Dict = None) -> Tuple[np.ndarray, np.ndarray]:
