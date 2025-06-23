@@ -607,14 +607,6 @@ def get_historical_data(symbol: str, timeframe: str = "1d", lookback_days: int =
         # Create ticker object
         ticker = yf.Ticker(symbol)
         
-        # Get history metadata first for better reliability
-        try:
-            hist_metadata = retry_yfinance_request(lambda: ticker.get_history_metadata())
-            if hist_metadata is None:
-                print(f"Warning: Could not get history metadata for {symbol}")
-        except Exception as e:
-            print(f"Warning: History metadata fetch failed for {symbol}: {str(e)}")
-        
         # Fetch historical data with retry mechanism
         def fetch_history():
             return ticker.history(
@@ -624,13 +616,7 @@ def get_historical_data(symbol: str, timeframe: str = "1d", lookback_days: int =
                 actions=True,
                 auto_adjust=True,
                 back_adjust=True,
-                repair=True,
-                keepna=False,
-                threads=True,
-                proxy=None,
-                rounding=True,
-                timeout=30,
-                debug=False
+                repair=True
             )
         
         df = retry_yfinance_request(fetch_history)
@@ -1963,14 +1949,6 @@ def get_market_data(symbol: str = "^GSPC", lookback_days: int = 365) -> pd.DataF
     try:
         ticker = yf.Ticker(symbol)
         
-        # Get history metadata first for better reliability
-        try:
-            hist_metadata = retry_yfinance_request(lambda: ticker.get_history_metadata())
-            if hist_metadata is None:
-                print(f"Warning: Could not get history metadata for {symbol}")
-        except Exception as e:
-            print(f"Warning: History metadata fetch failed for {symbol}: {str(e)}")
-        
         def fetch_market_history():
             return ticker.history(
                 period=f"{lookback_days}d",
@@ -1979,13 +1957,7 @@ def get_market_data(symbol: str = "^GSPC", lookback_days: int = 365) -> pd.DataF
                 actions=False,
                 auto_adjust=True,
                 back_adjust=True,
-                repair=True,
-                keepna=False,
-                threads=True,
-                proxy=None,
-                rounding=True,
-                timeout=30,
-                debug=False
+                repair=True
             )
         
         df = retry_yfinance_request(fetch_market_history)
@@ -4536,11 +4508,10 @@ def get_market_info_from_yfinance(symbol: str) -> Dict:
         ticker = yf.Ticker(symbol)
         
         # Get basic info with retry - use get_info() method as recommended
-        info = retry_yfinance_request(lambda: ticker.get_info())
+        info = retry_yfinance_request(lambda: ticker.info)
         
-        # Get current market data with retry - use get_history_metadata() for better reliability
+        # Get current market data with retry
         try:
-            hist_metadata = retry_yfinance_request(lambda: ticker.get_history_metadata())
             hist = retry_yfinance_request(lambda: ticker.history(period="1d"))
         except Exception as e:
             print(f"Error fetching history for {symbol}: {str(e)}")
@@ -4560,9 +4531,9 @@ def get_market_info_from_yfinance(symbol: str) -> Dict:
                 'change_percent': ((hist['Close'].iloc[-1] - hist['Open'].iloc[-1]) / hist['Open'].iloc[-1]) * 100
             })
         
-        # Get news if available with retry - use get_news() method
+        # Get news if available with retry
         try:
-            news = retry_yfinance_request(lambda: ticker.get_news())
+            news = retry_yfinance_request(lambda: ticker.news)
             market_data['news_count'] = len(news) if news else 0
         except Exception as e:
             print(f"Error fetching news for {symbol}: {str(e)}")
@@ -4578,9 +4549,9 @@ def get_market_info_from_yfinance(symbol: str) -> Dict:
             market_data['earnings'] = []
             market_data['recommendations'] = []
         else:
-            # Get recommendations if available with retry - use get_recommendations() method
+            # Get recommendations if available with retry
             try:
-                recommendations = retry_yfinance_request(lambda: ticker.get_recommendations())
+                recommendations = retry_yfinance_request(lambda: ticker.recommendations)
                 if recommendations is not None and hasattr(recommendations, 'empty') and not recommendations.empty:
                     market_data['recommendations'] = recommendations.tail(5).to_dict('records')
                 else:
@@ -4589,9 +4560,9 @@ def get_market_info_from_yfinance(symbol: str) -> Dict:
                 print(f"Error fetching recommendations for {symbol}: {str(e)}")
                 market_data['recommendations'] = []
 
-            # Get earnings info if available with retry - use get_earnings() method
+            # Get earnings info if available with retry
             try:
-                earnings = retry_yfinance_request(lambda: ticker.get_earnings())
+                earnings = retry_yfinance_request(lambda: ticker.earnings)
                 # Check if earnings is None or empty before accessing .empty
                 if earnings is not None and hasattr(earnings, 'empty') and not earnings.empty:
                     market_data['earnings'] = earnings.tail(4).to_dict('records')
@@ -4603,7 +4574,7 @@ def get_market_info_from_yfinance(symbol: str) -> Dict:
 
             # For stocks, try to get dividends and splits
             try:
-                dividends = retry_yfinance_request(lambda: ticker.get_dividends())
+                dividends = retry_yfinance_request(lambda: ticker.dividends)
                 if dividends is not None and hasattr(dividends, 'empty') and not dividends.empty:
                     additional_data['dividends'] = dividends.tail(4).to_dict('records')
                 else:
@@ -4613,7 +4584,7 @@ def get_market_info_from_yfinance(symbol: str) -> Dict:
                 additional_data['dividends'] = []
             
             try:
-                splits = retry_yfinance_request(lambda: ticker.get_splits())
+                splits = retry_yfinance_request(lambda: ticker.splits)
                 if splits is not None and hasattr(splits, 'empty') and not splits.empty:
                     additional_data['splits'] = splits.tail(4).to_dict('records')
                 else:
