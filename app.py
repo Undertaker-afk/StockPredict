@@ -3351,34 +3351,37 @@ The **Advanced Stock Prediction System** is a cutting-edge AI-powered platform w
                 # Get historical data for additional metrics
                 df = get_historical_data(symbol, timeframe, lookback_days)
                 
-                # Calculate structured product metrics
+                # Fetch fundamental data from yfinance info property
+                fundamentals = get_fundamental_data(symbol)
+                
+                # Calculate structured product metrics using fundamentals and price data
                 product_metrics = {
-                    "Market_Cap": df['Market_Cap'].iloc[-1],
-                    "Sector": df['Sector'].iloc[-1],
-                    "Industry": df['Industry'].iloc[-1],
-                    "Dividend_Yield": df['Dividend_Yield'].iloc[-1],
-                    "Avg_Daily_Volume": df['Avg_Daily_Volume'].iloc[-1],
-                    "Volume_Volatility": df['Volume_Volatility'].iloc[-1],
-                    "Enterprise_Value": df['Enterprise_Value'].iloc[-1],
-                    "P/E_Ratio": df['P/E_Ratio'].iloc[-1],
-                    "Forward_P/E": df['Forward_P/E'].iloc[-1],
-                    "PEG_Ratio": df['PEG_Ratio'].iloc[-1],
-                    "Price_to_Book": df['Price_to_Book'].iloc[-1],
-                    "Price_to_Sales": df['Price_to_Sales'].iloc[-1]
+                    "Market_Cap": fundamentals.get("marketCap"),
+                    "Sector": fundamentals.get("sector"),
+                    "Industry": fundamentals.get("industry"),
+                    "Dividend_Yield": fundamentals.get("dividendYield"),
+                    "Avg_Daily_Volume": fundamentals.get("averageDailyVolume"),
+                    "Volume_Volatility": df['Volume'].rolling(window=20, min_periods=1).std().iloc[-1] if 'Volume' in df.columns else None,
+                    "Enterprise_Value": fundamentals.get("enterpriseValue"),
+                    "P/E_Ratio": fundamentals.get("trailingPE"),
+                    "Forward_P/E": fundamentals.get("forwardPE"),
+                    "PEG_Ratio": fundamentals.get("pegRatio"),
+                    "Price_to_Book": fundamentals.get("priceToBook"),
+                    "Price_to_Sales": fundamentals.get("priceToSalesTrailing12Months"),
                 }
                 
                 # Calculate advanced risk metrics
                 risk_metrics = calculate_advanced_risk_metrics(df, market_returns, risk_free_rate)
                 
-                # Calculate sector metrics
+                # Calculate sector metrics using fundamentals
                 sector_metrics = {
-                    "Sector": df['Sector'].iloc[-1],
-                    "Industry": df['Industry'].iloc[-1],
-                    "Market_Cap_Rank": "Large" if df['Market_Cap'].iloc[-1] > 1e10 else "Mid" if df['Market_Cap'].iloc[-1] > 1e9 else "Small",
-                    "Liquidity_Score": "High" if df['Avg_Daily_Volume'].iloc[-1] > 1e6 else "Medium" if df['Avg_Daily_Volume'].iloc[-1] > 1e5 else "Low",
-                    "Gross_Margin": df['Gross_Margin'].iloc[-1],
-                    "Operating_Margin": df['Operating_Margin'].iloc[-1],
-                    "Net_Margin": df['Net_Margin'].iloc[-1]
+                    "Sector": fundamentals.get("sector"),
+                    "Industry": fundamentals.get("industry"),
+                    "Market_Cap_Rank": "Large" if fundamentals.get("marketCap", 0) > 1e10 else "Mid" if fundamentals.get("marketCap", 0) > 1e9 else "Small",
+                    "Liquidity_Score": "High" if fundamentals.get("averageDailyVolume", 0) > 1e6 else "Medium" if fundamentals.get("averageDailyVolume", 0) > 1e5 else "Low",
+                    "Gross_Margin": fundamentals.get("grossMargins"),
+                    "Operating_Margin": fundamentals.get("operatingMargins"),
+                    "Net_Margin": fundamentals.get("netMargins"),
                 }
                 
                 # Add enhanced features information
