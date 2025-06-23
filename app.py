@@ -3037,37 +3037,6 @@ The **Advanced Stock Prediction System** is a cutting-edge AI-powered platform w
             outputs=[market_status_result]
         )
         
-        gr.Markdown("---")  # Add a separator
-        
-        # Add enhanced market information section
-        with gr.Accordion("🌍 Global Market Information", open=False):
-            with gr.Row():
-                with gr.Column():
-                    gr.Markdown("### Market Summary")
-                    # This section is now handled in the nested accordion above
-                    gr.Markdown("Market summary functionality is available in the 'Enhanced Market Information' section above.")
-                
-                with gr.Column():
-                    gr.Markdown("### Market Types Supported")
-                    gr.Markdown("""
-                    **📈 Stock Markets:**
-                    - **US Stocks** (NYSE, NASDAQ, AMEX): 9:30 AM - 4:00 PM ET
-                    - **European Markets** (London, Frankfurt, Paris): 8:00 AM - 4:30 PM GMT
-                    - **Asian Markets** (Tokyo, Hong Kong, Shanghai): 9:00 AM - 3:30 PM JST
-                    
-                    **📊 24/7 Markets:**
-                    - **Forex** (Global Currency Exchange): 24/7 trading
-                    - **Cryptocurrency** (Bitcoin, Ethereum, Altcoins): 24/7 trading
-                    - **US Futures** (CME, ICE, CBOT): 24/7 trading
-                    - **Commodities** (Gold, Silver, Oil, Natural Gas): 24/7 trading
-                    
-                    **💡 Features:**
-                    - Real-time market status updates every 10 minutes
-                    - Timezone-aware calculations
-                    - Market-specific trading hours
-                    - Enhanced data from yfinance API
-                    """)
-        
         # Advanced Settings Accordion
         with gr.Accordion("Advanced Settings", open=False):
             with gr.Row():
