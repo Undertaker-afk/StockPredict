@@ -1230,24 +1230,56 @@ def make_prediction_enhanced(symbol: str, timeframe: str = "1d", prediction_days
                     print(f"Warning: Discontinuity detected between last actual ({last_actual:.4f}) and first prediction ({first_pred:.4f})")
                     print(f"Discontinuity magnitude: {abs(first_pred - last_actual):.4f} ({abs(first_pred - last_actual)/last_actual*100:.2f}%)")
                     
-                    # Apply smooth continuity correction
+                    # Apply improved continuity correction
                     if len(mean_pred) > 1:
-                        # Calculate the trend from the original prediction
-                        original_trend = mean_pred[1] - first_pred
+                        # Calculate the overall trend from the original predictions
+                        original_trend = mean_pred[-1] - first_pred
+                        total_steps = len(mean_pred) - 1
                         
-                        # Apply a smooth transition over the first few predictions
-                        transition_length = min(3, len(mean_pred))
+                        # Calculate the desired trend per step to reach the final prediction
+                        if total_steps > 0:
+                            trend_per_step = original_trend / total_steps
+                        else:
+                            trend_per_step = 0
+                        
+                        # Apply smooth transition starting from last actual
+                        # Use a gradual transition that preserves the overall trend
+                        transition_length = min(5, len(mean_pred))  # Longer transition for smoother curve
+                        
                         for i in range(transition_length):
-                            # Gradually transition from last actual to predicted trend
-                            transition_factor = i / transition_length
-                            mean_pred[i] = last_actual + original_trend * i * transition_factor
+                            if i == 0:
+                                # First prediction should be very close to last actual
+                                mean_pred[i] = last_actual + trend_per_step * 0.1
+                            else:
+                                # Gradually increase the trend contribution
+                                transition_factor = min(1.0, i / transition_length)
+                                trend_contribution = trend_per_step * i * transition_factor
+                                mean_pred[i] = last_actual + trend_contribution
+                        
+                        # For remaining predictions, maintain the original relative differences
+                        if len(mean_pred) > transition_length:
+                            # Calculate the scale factor to maintain relative relationships
+                            original_diff = mean_pred[transition_length] - mean_pred[transition_length-1]
+                            if original_diff != 0:
+                                # Scale the remaining predictions to maintain continuity
+                                for i in range(transition_length, len(mean_pred)):
+                                    if i == transition_length:
+                                        # Ensure smooth transition at the boundary
+                                        mean_pred[i] = mean_pred[i-1] + original_diff * 0.5
+                                    else:
+                                        # Maintain the original relative differences
+                                        original_diff_i = mean_pred[i] - mean_pred[i-1]
+                                        mean_pred[i] = mean_pred[i-1] + original_diff_i
+                        
+                        print(f"Applied continuity correction: First prediction adjusted from {first_pred:.4f} to {mean_pred[0]:.4f}")
                         
                         # Apply financial smoothing if enabled
                         if use_smoothing:
                             mean_pred = apply_financial_smoothing(mean_pred, smoothing_type, smoothing_window, smoothing_alpha, 3, use_smoothing)
                     else:
-                        # Single prediction case
+                        # Single prediction case - set to last actual
                         mean_pred[0] = last_actual
+                        print(f"Single prediction case: Set to last actual value {last_actual:.4f}")
                 
                 # If we had to limit the prediction length, extend the prediction recursively
                 if actual_prediction_length < trim_length:
@@ -1327,20 +1359,51 @@ def make_prediction_enhanced(symbol: str, timeframe: str = "1d", prediction_days
                             print(f"Warning: Discontinuity detected between last prediction ({extended_mean_pred[-1]:.4f}) and next prediction ({next_mean_pred[0]:.4f})")
                             print(f"Extension discontinuity magnitude: {abs(next_mean_pred[0] - extended_mean_pred[-1]):.4f}")
                             
-                            # Apply smooth continuity correction
+                            # Apply improved continuity correction for extensions
                             if len(next_mean_pred) > 1:
-                                # Calculate the trend from the original prediction
-                                original_trend = next_mean_pred[1] - next_mean_pred[0]
+                                # Calculate the overall trend from the original predictions
+                                original_trend = next_mean_pred[-1] - next_mean_pred[0]
+                                total_steps = len(next_mean_pred) - 1
                                 
-                                # Apply a smooth transition over the first few predictions
-                                transition_length = min(3, len(next_mean_pred))
+                                # Calculate the desired trend per step
+                                if total_steps > 0:
+                                    trend_per_step = original_trend / total_steps
+                                else:
+                                    trend_per_step = 0
+                                
+                                # Apply smooth transition starting from last extended prediction
+                                transition_length = min(5, len(next_mean_pred))  # Longer transition for smoother curve
+                                
                                 for i in range(transition_length):
-                                    # Gradually transition from last prediction to predicted trend
-                                    transition_factor = i / transition_length
-                                    next_mean_pred[i] = extended_mean_pred[-1] + original_trend * i * transition_factor
+                                    if i == 0:
+                                        # First prediction should be very close to last extended prediction
+                                        next_mean_pred[i] = extended_mean_pred[-1] + trend_per_step * 0.1
+                                    else:
+                                        # Gradually increase the trend contribution
+                                        transition_factor = min(1.0, i / transition_length)
+                                        trend_contribution = trend_per_step * i * transition_factor
+                                        next_mean_pred[i] = extended_mean_pred[-1] + trend_contribution
+                                
+                                # For remaining predictions, maintain the original relative differences
+                                if len(next_mean_pred) > transition_length:
+                                    # Calculate the scale factor to maintain relative relationships
+                                    original_diff = next_mean_pred[transition_length] - next_mean_pred[transition_length-1]
+                                    if original_diff != 0:
+                                        # Scale the remaining predictions to maintain continuity
+                                        for i in range(transition_length, len(next_mean_pred)):
+                                            if i == transition_length:
+                                                # Ensure smooth transition at the boundary
+                                                next_mean_pred[i] = next_mean_pred[i-1] + original_diff * 0.5
+                                            else:
+                                                # Maintain the original relative differences
+                                                original_diff_i = next_mean_pred[i] - next_mean_pred[i-1]
+                                                next_mean_pred[i] = next_mean_pred[i-1] + original_diff_i
+                                
+                                print(f"Applied extension continuity correction: First extension prediction adjusted from {next_mean_pred[0]:.4f} to {next_mean_pred[0]:.4f}")
                             else:
-                                # Single prediction case
+                                # Single prediction case - set to last extended prediction
                                 next_mean_pred[0] = extended_mean_pred[-1]
+                                print(f"Single extension prediction case: Set to last extended prediction value {extended_mean_pred[-1]:.4f}")
                         
                         # Apply financial smoothing if enabled
                         if use_smoothing and len(next_mean_pred) > 1:
@@ -1406,6 +1469,71 @@ def make_prediction_enhanced(symbol: str, timeframe: str = "1d", prediction_days
                 else:
                     final_pred = mean_pred
                     final_uncertainty = std_pred
+                
+                # Final continuity validation and correction
+                print("Performing final continuity validation...")
+                last_actual = df['Close'].iloc[-1]
+                first_pred = final_pred[0]
+                discontinuity_threshold = max(1e-6, 0.01 * abs(last_actual))  # Stricter 1% threshold for final check
+                
+                if abs(first_pred - last_actual) > discontinuity_threshold:
+                    print(f"Final check: Discontinuity detected between last actual ({last_actual:.4f}) and first prediction ({first_pred:.4f})")
+                    print(f"Final discontinuity magnitude: {abs(first_pred - last_actual):.4f} ({abs(first_pred - last_actual)/last_actual*100:.2f}%)")
+                    
+                    # Apply final continuity correction
+                    if len(final_pred) > 1:
+                        # Calculate the overall trend
+                        overall_trend = final_pred[-1] - first_pred
+                        total_steps = len(final_pred) - 1
+                        
+                        if total_steps > 0:
+                            trend_per_step = overall_trend / total_steps
+                        else:
+                            trend_per_step = 0
+                        
+                        # Apply very smooth transition
+                        transition_length = min(8, len(final_pred))  # Longer transition for final correction
+                        
+                        for i in range(transition_length):
+                            if i == 0:
+                                # First prediction should be extremely close to last actual
+                                final_pred[i] = last_actual + trend_per_step * 0.05
+                            else:
+                                # Very gradual transition
+                                transition_factor = min(1.0, (i / transition_length) ** 2)  # Quadratic easing
+                                trend_contribution = trend_per_step * i * transition_factor
+                                final_pred[i] = last_actual + trend_contribution
+                        
+                        # Maintain relative relationships for remaining predictions
+                        if len(final_pred) > transition_length:
+                            for i in range(transition_length, len(final_pred)):
+                                if i == transition_length:
+                                    # Smooth transition at boundary
+                                    final_pred[i] = final_pred[i-1] + trend_per_step * 0.8
+                                else:
+                                    # Maintain original relative differences
+                                    original_diff = final_pred[i] - final_pred[i-1]
+                                    final_pred[i] = final_pred[i-1] + original_diff * 0.9  # Slightly dampened
+                        
+                        print(f"Final continuity correction applied: First prediction adjusted from {first_pred:.4f} to {final_pred[0]:.4f}")
+                        
+                        # Apply additional smoothing for final correction
+                        if use_smoothing:
+                            final_pred = apply_financial_smoothing(final_pred, smoothing_type, smoothing_window, smoothing_alpha * 0.5, 3, use_smoothing)
+                    else:
+                        # Single prediction case
+                        final_pred[0] = last_actual
+                        print(f"Final single prediction correction: Set to last actual value {last_actual:.4f}")
+                
+                # Verify final continuity
+                final_first_pred = final_pred[0]
+                final_discontinuity = abs(final_first_pred - last_actual) / last_actual * 100
+                print(f"Final continuity check: Discontinuity = {final_discontinuity:.3f}% (threshold: 1.0%)")
+                
+                if final_discontinuity <= 1.0:
+                    print("✓ Continuity validation passed - predictions are smooth")
+                else:
+                    print(f"⚠ Continuity validation warning - discontinuity of {final_discontinuity:.3f}% remains")
                 
             except Exception as e:
                 print(f"Chronos prediction error: {str(e)}")
@@ -1530,6 +1658,71 @@ def make_prediction_enhanced(symbol: str, timeframe: str = "1d", prediction_days
                 
                 print(f"Technical strategy completed: {len(final_pred)} predictions generated")
                 
+                # Final continuity validation for technical strategy
+                print("Performing final continuity validation for technical strategy...")
+                last_actual = df['Close'].iloc[-1]
+                first_pred = final_pred[0]
+                discontinuity_threshold = max(1e-6, 0.01 * abs(last_actual))  # Stricter 1% threshold for final check
+                
+                if abs(first_pred - last_actual) > discontinuity_threshold:
+                    print(f"Technical strategy final check: Discontinuity detected between last actual ({last_actual:.4f}) and first prediction ({first_pred:.4f})")
+                    print(f"Technical strategy final discontinuity magnitude: {abs(first_pred - last_actual):.4f} ({abs(first_pred - last_actual)/last_actual*100:.2f}%)")
+                    
+                    # Apply final continuity correction for technical strategy
+                    if len(final_pred) > 1:
+                        # Calculate the overall trend
+                        overall_trend = final_pred[-1] - first_pred
+                        total_steps = len(final_pred) - 1
+                        
+                        if total_steps > 0:
+                            trend_per_step = overall_trend / total_steps
+                        else:
+                            trend_per_step = 0
+                        
+                        # Apply very smooth transition
+                        transition_length = min(8, len(final_pred))  # Longer transition for final correction
+                        
+                        for i in range(transition_length):
+                            if i == 0:
+                                # First prediction should be extremely close to last actual
+                                final_pred[i] = last_actual + trend_per_step * 0.05
+                            else:
+                                # Very gradual transition
+                                transition_factor = min(1.0, (i / transition_length) ** 2)  # Quadratic easing
+                                trend_contribution = trend_per_step * i * transition_factor
+                                final_pred[i] = last_actual + trend_contribution
+                        
+                        # Maintain relative relationships for remaining predictions
+                        if len(final_pred) > transition_length:
+                            for i in range(transition_length, len(final_pred)):
+                                if i == transition_length:
+                                    # Smooth transition at boundary
+                                    final_pred[i] = final_pred[i-1] + trend_per_step * 0.8
+                                else:
+                                    # Maintain original relative differences
+                                    original_diff = final_pred[i] - final_pred[i-1]
+                                    final_pred[i] = final_pred[i-1] + original_diff * 0.9  # Slightly dampened
+                        
+                        print(f"Technical strategy final continuity correction applied: First prediction adjusted from {first_pred:.4f} to {final_pred[0]:.4f}")
+                        
+                        # Apply additional smoothing for final correction
+                        if use_smoothing:
+                            final_pred = apply_financial_smoothing(final_pred, smoothing_type, smoothing_window, smoothing_alpha * 0.5, 3, use_smoothing)
+                    else:
+                        # Single prediction case
+                        final_pred[0] = last_actual
+                        print(f"Technical strategy final single prediction correction: Set to last actual value {last_actual:.4f}")
+                
+                # Verify final continuity for technical strategy
+                final_first_pred = final_pred[0]
+                final_discontinuity = abs(final_first_pred - last_actual) / last_actual * 100
+                print(f"Technical strategy final continuity check: Discontinuity = {final_discontinuity:.3f}% (threshold: 1.0%)")
+                
+                if final_discontinuity <= 1.0:
+                    print("✓ Technical strategy continuity validation passed - predictions are smooth")
+                else:
+                    print(f"⚠ Technical strategy continuity validation warning - discontinuity of {final_discontinuity:.3f}% remains")
+                
             except Exception as e:
                 print(f"Technical strategy error: {str(e)}")
                 # Fallback to simple moving average prediction
@@ -1554,6 +1747,67 @@ def make_prediction_enhanced(symbol: str, timeframe: str = "1d", prediction_days
                     advanced_uncertainties = calculate_advanced_uncertainty(
                         dummy_quantiles, volatility, market_conditions
                     )
+                    
+                    # Final continuity validation for fallback case
+                    print("Performing final continuity validation for fallback prediction...")
+                    last_actual = df['Close'].iloc[-1]
+                    first_pred = final_pred[0]
+                    discontinuity_threshold = max(1e-6, 0.01 * abs(last_actual))  # Stricter 1% threshold for final check
+                    
+                    if abs(first_pred - last_actual) > discontinuity_threshold:
+                        print(f"Fallback final check: Discontinuity detected between last actual ({last_actual:.4f}) and first prediction ({first_pred:.4f})")
+                        print(f"Fallback final discontinuity magnitude: {abs(first_pred - last_actual):.4f} ({abs(first_pred - last_actual)/last_actual*100:.2f}%)")
+                        
+                        # Apply final continuity correction for fallback case
+                        if len(final_pred) > 1:
+                            # Calculate the overall trend
+                            overall_trend = final_pred[-1] - first_pred
+                            total_steps = len(final_pred) - 1
+                            
+                            if total_steps > 0:
+                                trend_per_step = overall_trend / total_steps
+                            else:
+                                trend_per_step = 0
+                            
+                            # Apply very smooth transition
+                            transition_length = min(8, len(final_pred))  # Longer transition for final correction
+                            
+                            for i in range(transition_length):
+                                if i == 0:
+                                    # First prediction should be extremely close to last actual
+                                    final_pred[i] = last_actual + trend_per_step * 0.05
+                                else:
+                                    # Very gradual transition
+                                    transition_factor = min(1.0, (i / transition_length) ** 2)  # Quadratic easing
+                                    trend_contribution = trend_per_step * i * transition_factor
+                                    final_pred[i] = last_actual + trend_contribution
+                            
+                            # Maintain relative relationships for remaining predictions
+                            if len(final_pred) > transition_length:
+                                for i in range(transition_length, len(final_pred)):
+                                    if i == transition_length:
+                                        # Smooth transition at boundary
+                                        final_pred[i] = final_pred[i-1] + trend_per_step * 0.8
+                                    else:
+                                        # Maintain original relative differences
+                                        original_diff = final_pred[i] - final_pred[i-1]
+                                        final_pred[i] = final_pred[i-1] + original_diff * 0.9  # Slightly dampened
+                            
+                            print(f"Fallback final continuity correction applied: First prediction adjusted from {first_pred:.4f} to {final_pred[0]:.4f}")
+                        else:
+                            # Single prediction case
+                            final_pred[0] = last_actual
+                            print(f"Fallback final single prediction correction: Set to last actual value {last_actual:.4f}")
+                    
+                    # Verify final continuity for fallback case
+                    final_first_pred = final_pred[0]
+                    final_discontinuity = abs(final_first_pred - last_actual) / last_actual * 100
+                    print(f"Fallback final continuity check: Discontinuity = {final_discontinuity:.3f}% (threshold: 1.0%)")
+                    
+                    if final_discontinuity <= 1.0:
+                        print("✓ Fallback continuity validation passed - predictions are smooth")
+                    else:
+                        print(f"⚠ Fallback continuity validation warning - discontinuity of {final_discontinuity:.3f}% remains")
                     
                 except Exception as fallback_error:
                     print(f"Fallback prediction error: {str(fallback_error)}")
