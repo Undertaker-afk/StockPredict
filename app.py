@@ -393,18 +393,28 @@ def retry_yfinance_request(func, max_retries=3, initial_delay=1):
         initial_delay: Initial delay in seconds before first retry
     
     Returns:
-        Result of the function call if successful
+        Result of the function call if successful, or None if all attempts fail
     """
     for attempt in range(max_retries):
         try:
-            return func()
+            result = func()
+            # Check if result is None (common with yfinance for unavailable data)
+            if result is None:
+                if attempt == max_retries - 1:
+                    print(f"Function returned None after {max_retries} attempts")
+                    return None
+                else:
+                    print(f"Function returned None (attempt {attempt + 1}/{max_retries}), retrying...")
+                    time.sleep(initial_delay * (2 ** attempt))
+                    continue
+            return result
         except Exception as e:
             error_str = str(e).lower()
             
             # Check if this is the last attempt
             if attempt == max_retries - 1:
                 print(f"Final attempt failed after {max_retries} retries: {str(e)}")
-                raise e
+                return None  # Return None instead of raising to avoid crashes
             
             # Determine delay based on error type and attempt number
             if "401" in error_str or "unauthorized" in error_str:
@@ -566,6 +576,7 @@ def cleanup_on_exit():
 def get_historical_data(symbol: str, timeframe: str = "1d", lookback_days: int = 365) -> pd.DataFrame:
     """
     Fetch historical data using yfinance with enhanced support for intraday data.
+    Uses recommended API methods for better reliability.
     
     Args:
         symbol (str): The stock symbol (e.g., 'AAPL')
@@ -583,191 +594,76 @@ def get_historical_data(symbol: str, timeframe: str = "1d", lookback_days: int =
         
         # Map timeframe to yfinance interval and adjust lookback period
         tf_map = {
-            "1d": "1d",
-            "1h": "1h",
-            "15m": "15m"
+            "1d": {"interval": "1d", "period": f"{lookback_days}d"},
+            "1h": {"interval": "1h", "period": f"{min(lookback_days * 24, 730)}h"},  # Max 730 hours (30 days)
+            "15m": {"interval": "15m", "period": f"{min(lookback_days * 96, 60)}d"}  # Max 60 days for 15m
         }
-        interval = tf_map.get(timeframe, "1d")
         
-        # Adjust lookback period based on timeframe and yfinance limits
-        if timeframe == "1h":
-            lookback_days = min(lookback_days, 60)  # Yahoo allows up to 60 days for hourly data
-        elif timeframe == "15m":
-            lookback_days = min(lookback_days, 7)   # Yahoo allows up to 7 days for 15m data
+        if timeframe not in tf_map:
+            raise ValueError(f"Unsupported timeframe: {timeframe}. Supported: {list(tf_map.keys())}")
         
-        # Calculate date range
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=lookback_days)
+        interval_config = tf_map[timeframe]
         
-        # Fetch data using yfinance with retry mechanism
+        # Create ticker object
         ticker = yf.Ticker(symbol)
         
+        # Get history metadata first for better reliability
+        try:
+            hist_metadata = retry_yfinance_request(lambda: ticker.get_history_metadata())
+            if hist_metadata is None:
+                print(f"Warning: Could not get history metadata for {symbol}")
+        except Exception as e:
+            print(f"Warning: History metadata fetch failed for {symbol}: {str(e)}")
+        
+        # Fetch historical data with retry mechanism
         def fetch_history():
             return ticker.history(
-                start=start_date, 
-                end=end_date, 
-                interval=interval,
-                prepost=True,  # Include pre/post market data for intraday
-                actions=True,  # Include dividends and splits
-                auto_adjust=True,  # Automatically adjust for splits
-                back_adjust=True,  # Back-adjust data for splits
-                repair=True  # Repair missing data points
+                period=interval_config["period"],
+                interval=interval_config["interval"],
+                prepost=True,
+                actions=True,
+                auto_adjust=True,
+                back_adjust=True,
+                repair=True,
+                keepna=False,
+                threads=True,
+                proxy=None,
+                rounding=True,
+                timeout=30,
+                debug=False
             )
         
         df = retry_yfinance_request(fetch_history)
         
-        if df.empty:
-            raise Exception(f"No data available for {symbol} in {timeframe} timeframe")
+        if df is None or df.empty:
+            raise Exception(f"No data returned for {symbol}")
         
-        # Ensure all required columns are present and numeric
-        required_columns = ['Open', 'High', 'Low', 'Close', 'Volume']
-        for col in required_columns:
-            if col not in df.columns:
-                raise Exception(f"Missing required column: {col}")
-            df[col] = pd.to_numeric(df[col], errors='coerce')
+        # Validate data quality
+        if len(df) < 10:
+            raise Exception(f"Insufficient data for {symbol}: only {len(df)} data points")
         
-        # Get additional info for structured products with retry mechanism
-        def fetch_info():
-            info = ticker.info
-            if info is None:
-                raise Exception(f"Could not fetch company info for {symbol}")
-            return info
+        # Check for missing values in critical columns
+        critical_columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+        missing_data = df[critical_columns].isnull().sum()
+        if missing_data.sum() > len(df) * 0.1:  # More than 10% missing data
+            print(f"Warning: Significant missing data for {symbol}: {missing_data.to_dict()}")
         
-        try:
-            info = retry_yfinance_request(fetch_info)
-            df['Market_Cap'] = float(info.get('marketCap', 0))
-            df['Sector'] = info.get('sector', 'Unknown')
-            df['Industry'] = info.get('industry', 'Unknown')
-            df['Dividend_Yield'] = float(info.get('dividendYield', 0))
-            
-            # Add additional company metrics
-            df['Enterprise_Value'] = float(info.get('enterpriseValue', 0))
-            df['P/E_Ratio'] = float(info.get('trailingPE', 0))
-            df['Forward_P/E'] = float(info.get('forwardPE', 0))
-            df['PEG_Ratio'] = float(info.get('pegRatio', 0))
-            df['Price_to_Book'] = float(info.get('priceToBook', 0))
-            df['Price_to_Sales'] = float(info.get('priceToSalesTrailing12Months', 0))
-            df['Return_on_Equity'] = float(info.get('returnOnEquity', 0))
-            df['Return_on_Assets'] = float(info.get('returnOnAssets', 0))
-            df['Debt_to_Equity'] = float(info.get('debtToEquity', 0))
-            df['Current_Ratio'] = float(info.get('currentRatio', 0))
-            df['Quick_Ratio'] = float(info.get('quickRatio', 0))
-            df['Gross_Margin'] = float(info.get('grossMargins', 0))
-            df['Operating_Margin'] = float(info.get('operatingMargins', 0))
-            df['Net_Margin'] = float(info.get('netIncomeToCommon', 0))
-            
-        except Exception as e:
-            print(f"Warning: Could not fetch company info for {symbol}: {str(e)}")
-            # Set default values for missing info
-            df['Market_Cap'] = 0.0
-            df['Sector'] = 'Unknown'
-            df['Industry'] = 'Unknown'
-            df['Dividend_Yield'] = 0.0
-            df['Enterprise_Value'] = 0.0
-            df['P/E_Ratio'] = 0.0
-            df['Forward_P/E'] = 0.0
-            df['PEG_Ratio'] = 0.0
-            df['Price_to_Book'] = 0.0
-            df['Price_to_Sales'] = 0.0
-            df['Return_on_Equity'] = 0.0
-            df['Return_on_Assets'] = 0.0
-            df['Debt_to_Equity'] = 0.0
-            df['Current_Ratio'] = 0.0
-            df['Quick_Ratio'] = 0.0
-            df['Gross_Margin'] = 0.0
-            df['Operating_Margin'] = 0.0
-            df['Net_Margin'] = 0.0
-        
-        # Calculate technical indicators with adjusted windows based on timeframe
-        if timeframe == "1d":
-            sma_window_20 = 20
-            sma_window_50 = 50
-            sma_window_200 = 200
-            vol_window = 20
-        elif timeframe == "1h":
-            sma_window_20 = 20 * 6  # 5 trading days
-            sma_window_50 = 50 * 6  # ~10 trading days
-            sma_window_200 = 200 * 6  # ~40 trading days
-            vol_window = 20 * 6
-        else:  # 15m
-            sma_window_20 = 20 * 24  # 5 trading days
-            sma_window_50 = 50 * 24  # ~10 trading days
-            sma_window_200 = 200 * 24  # ~40 trading days
-            vol_window = 20 * 24
-        
-        # Calculate technical indicators
-        df['SMA_20'] = df['Close'].rolling(window=sma_window_20, min_periods=1).mean()
-        df['SMA_50'] = df['Close'].rolling(window=sma_window_50, min_periods=1).mean()
-        df['SMA_200'] = df['Close'].rolling(window=sma_window_200, min_periods=1).mean()
-        df['RSI'] = calculate_rsi(df['Close'])
-        df['MACD'], df['MACD_Signal'] = calculate_macd(df['Close'])
-        df['BB_Upper'], df['BB_Middle'], df['BB_Lower'] = calculate_bollinger_bands(df['Close'])
+        # Fill any remaining missing values with forward fill then backward fill
+        df = df.fillna(method='ffill').fillna(method='bfill')
         
         # Calculate returns and volatility
         df['Returns'] = df['Close'].pct_change()
-        df['Volatility'] = df['Returns'].rolling(window=vol_window, min_periods=1).std()
-        df['Annualized_Vol'] = df['Volatility'] * np.sqrt(252)
+        df['Volatility'] = df['Returns'].rolling(window=20).std()
         
-        # Calculate drawdown metrics
-        df['Rolling_Max'] = df['Close'].rolling(window=len(df), min_periods=1).max()
-        df['Drawdown'] = (df['Close'] - df['Rolling_Max']) / df['Rolling_Max']
-        df['Max_Drawdown'] = df['Drawdown'].rolling(window=len(df), min_periods=1).min()
+        # Calculate technical indicators
+        df = calculate_technical_indicators(df)
         
-        # Calculate liquidity metrics
-        df['Avg_Daily_Volume'] = df['Volume'].rolling(window=vol_window, min_periods=1).mean()
-        df['Volume_Volatility'] = df['Volume'].rolling(window=vol_window, min_periods=1).std()
-        
-        # Calculate additional intraday metrics for shorter timeframes
-        if timeframe in ["1h", "15m"]:
-            # Intraday volatility
-            df['Intraday_High_Low'] = (df['High'] - df['Low']) / df['Close']
-            df['Intraday_Volatility'] = df['Intraday_High_Low'].rolling(window=vol_window, min_periods=1).mean()
-            
-            # Volume analysis
-            df['Volume_Price_Trend'] = (df['Volume'] * df['Returns']).rolling(window=vol_window, min_periods=1).sum()
-            df['Volume_SMA'] = df['Volume'].rolling(window=vol_window, min_periods=1).mean()
-            df['Volume_Ratio'] = df['Volume'] / df['Volume_SMA']
-            
-            # Price momentum
-            df['Price_Momentum'] = df['Close'].pct_change(periods=5)
-            df['Volume_Momentum'] = df['Volume'].pct_change(periods=5)
-        
-        # Fill NaN values using forward fill then backward fill
-        df = df.ffill().bfill()
-        
-        # Ensure we have enough data points
-        min_required_points = 64  # Minimum required for Chronos
-        if len(df) < min_required_points:
-            # Try to fetch more historical data with retry mechanism
-            extended_start_date = start_date - timedelta(days=min_required_points - len(df))
-            
-            def fetch_extended_history():
-                return ticker.history(
-                    start=extended_start_date, 
-                    end=start_date, 
-                    interval=interval,
-                    prepost=True,
-                    actions=True,
-                    auto_adjust=True,
-                    back_adjust=True,
-                    repair=True
-                )
-            
-            extended_df = retry_yfinance_request(fetch_extended_history)
-            if not extended_df.empty:
-                df = pd.concat([extended_df, df])
-                df = df.ffill().bfill()
-        
-        if len(df) < 2:
-            raise Exception(f"Insufficient data points for {symbol} in {timeframe} timeframe")
-        
-        # Final check for any remaining None values
-        df = df.fillna(0)
-        
+        print(f"Successfully fetched {len(df)} data points for {symbol} ({timeframe})")
         return df
         
     except Exception as e:
-        raise Exception(f"Error fetching historical data for {symbol}: {str(e)}")
+        print(f"Error fetching historical data for {symbol}: {str(e)}")
+        raise
 
 def calculate_rsi(prices: pd.Series, period: int = 14) -> pd.Series:
     """Calculate Relative Strength Index"""
@@ -1001,6 +897,13 @@ def make_prediction_enhanced(symbol: str, timeframe: str = "1d", prediction_days
         # Get historical data
         df = get_historical_data(symbol, timeframe)
         
+        # Initialize variables that might not be set in all strategy paths
+        advanced_uncertainties = {}
+        volume_pred = None
+        volume_uncertainty = None
+        technical_predictions = {}
+        technical_uncertainties = {}
+        
         # Collect enhanced covariate data
         covariate_data = {}
         market_conditions = {}
@@ -1019,10 +922,6 @@ def make_prediction_enhanced(symbol: str, timeframe: str = "1d", prediction_days
         if use_sentiment:
             print("Calculating market sentiment...")
             sentiment_data = calculate_market_sentiment(symbol, 30)
-        
-        # Initialize technical predictions variables
-        technical_predictions = {}
-        technical_uncertainties = {}
         
         # Detect market regime
         regime_info = {}
@@ -1632,6 +1531,17 @@ def make_prediction_enhanced(symbol: str, timeframe: str = "1d", prediction_days
                         (technical_weight * final_uncertainty)**2 + (ensemble_weight * ensemble_uncertainty)**2
                     )
                 
+                # Calculate advanced uncertainties for technical strategy
+                historical_volatility = df['Volatility'].iloc[-1]
+                # Create dummy quantiles for technical strategy (since we don't have quantiles from Chronos)
+                dummy_quantiles = np.array([[
+                    [final_pred[i] - 2 * final_uncertainty[i], final_pred[i], final_pred[i] + 2 * final_uncertainty[i]]
+                    for i in range(len(final_pred))
+                ]])
+                advanced_uncertainties = calculate_advanced_uncertainty(
+                    dummy_quantiles, historical_volatility, market_conditions
+                )
+                
                 print(f"Technical strategy completed: {len(final_pred)} predictions generated")
                 
             except Exception as e:
@@ -1649,6 +1559,15 @@ def make_prediction_enhanced(symbol: str, timeframe: str = "1d", prediction_days
                     volume_uncertainty = None
                     ensemble_pred = np.array([])
                     ensemble_uncertainty = np.array([])
+                    
+                    # Calculate advanced uncertainties for fallback case
+                    dummy_quantiles = np.array([[
+                        [final_pred[i] - 2 * final_uncertainty[i], final_pred[i], final_pred[i] + 2 * final_uncertainty[i]]
+                        for i in range(len(final_pred))
+                    ]])
+                    advanced_uncertainties = calculate_advanced_uncertainty(
+                        dummy_quantiles, volatility, market_conditions
+                    )
                     
                 except Exception as fallback_error:
                     print(f"Fallback prediction error: {str(fallback_error)}")
@@ -2025,6 +1944,7 @@ def calculate_trading_signals(df: pd.DataFrame) -> Dict:
 def get_market_data(symbol: str = "^GSPC", lookback_days: int = 365) -> pd.DataFrame:
     """
     Fetch market data (S&P 500 by default) for correlation analysis and regime detection.
+    Uses recommended yfinance API methods for better reliability.
     
     Args:
         symbol (str): Market index symbol (default: ^GSPC for S&P 500)
@@ -2042,22 +1962,35 @@ def get_market_data(symbol: str = "^GSPC", lookback_days: int = 365) -> pd.DataF
     
     try:
         ticker = yf.Ticker(symbol)
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=lookback_days)
+        
+        # Get history metadata first for better reliability
+        try:
+            hist_metadata = retry_yfinance_request(lambda: ticker.get_history_metadata())
+            if hist_metadata is None:
+                print(f"Warning: Could not get history metadata for {symbol}")
+        except Exception as e:
+            print(f"Warning: History metadata fetch failed for {symbol}: {str(e)}")
         
         def fetch_market_history():
             return ticker.history(
-                start=start_date,
-                end=end_date,
+                period=f"{lookback_days}d",
                 interval="1d",
                 prepost=False,
                 actions=False,
-                auto_adjust=True
+                auto_adjust=True,
+                back_adjust=True,
+                repair=True,
+                keepna=False,
+                threads=True,
+                proxy=None,
+                rounding=True,
+                timeout=30,
+                debug=False
             )
         
         df = retry_yfinance_request(fetch_market_history)
         
-        if not df.empty:
+        if df is not None and not df.empty:
             df['Returns'] = df['Close'].pct_change()
             df['Volatility'] = df['Returns'].rolling(window=20).std()
             
@@ -2065,6 +1998,11 @@ def get_market_data(symbol: str = "^GSPC", lookback_days: int = 365) -> pd.DataF
             market_data_cache[cache_key] = df
             cache_expiry[cache_key] = current_time + CACHE_DURATION
             
+            print(f"Successfully fetched market data for {symbol}: {len(df)} data points")
+        else:
+            print(f"Warning: No data returned for {symbol}")
+            df = pd.DataFrame()
+        
         return df
     except Exception as e:
         print(f"Warning: Could not fetch market data for {symbol}: {str(e)}")
@@ -2132,13 +2070,61 @@ def detect_market_regime(returns: pd.Series, n_regimes: int = 3) -> Dict:
             for attempt in range(3):
                 try:
                     if attempt == 0:
-                        model = hmm.GaussianHMM(n_components=n_regimes, random_state=42, covariance_type="full", n_iter=100)
+                        model = hmm.GaussianHMM(
+                            n_components=n_regimes, 
+                            random_state=42, 
+                            covariance_type="full", 
+                            n_iter=500,
+                            tol=1e-4,
+                            init_params="stmc"
+                        )
                     elif attempt == 1:
-                        model = hmm.GaussianHMM(n_components=n_regimes, random_state=42, covariance_type="diag", n_iter=200)
+                        model = hmm.GaussianHMM(
+                            n_components=n_regimes, 
+                            random_state=42, 
+                            covariance_type="diag", 
+                            n_iter=1000,
+                            tol=1e-3,
+                            init_params="stmc"
+                        )
                     else:
-                        model = hmm.GaussianHMM(n_components=n_regimes, random_state=42, covariance_type="spherical", n_iter=300)
+                        model = hmm.GaussianHMM(
+                            n_components=n_regimes, 
+                            random_state=42, 
+                            covariance_type="spherical", 
+                            n_iter=1500,
+                            tol=1e-2,
+                            init_params="stmc"
+                        )
                     
-                    model.fit(returns_array.reshape(-1, 1))
+                    # Add data preprocessing to improve convergence
+                    returns_clean = returns_array[~np.isnan(returns_array)]
+                    returns_clean = returns_clean[~np.isinf(returns_clean)]
+                    
+                    # Remove outliers that might cause convergence issues
+                    q1, q3 = np.percentile(returns_clean, [25, 75])
+                    iqr = q3 - q1
+                    lower_bound = q1 - 1.5 * iqr
+                    upper_bound = q3 + 1.5 * iqr
+                    returns_filtered = returns_clean[(returns_clean >= lower_bound) & (returns_clean <= upper_bound)]
+                    
+                    # Ensure we have enough data
+                    if len(returns_filtered) < 50:
+                        returns_filtered = returns_clean
+                    
+                    # Fit the model with filtered data
+                    model.fit(returns_filtered.reshape(-1, 1))
+                    
+                    # Check if model converged
+                    if model.monitor_.converged:
+                        print(f"HMM converged successfully with {model.covariance_type} covariance type")
+                    else:
+                        print(f"HMM did not converge with {model.covariance_type} covariance type, trying next configuration...")
+                        if attempt < 2:  # Not the last attempt
+                            continue
+                        else:
+                            print("HMM failed to converge with all configurations, using fallback method")
+                            raise Exception("HMM convergence failed")
                     
                     # Get regime probabilities for the last observation
                     regime_probs = model.predict_proba(returns_array.reshape(-1, 1))
@@ -4550,7 +4536,7 @@ def calculate_regime_aware_uncertainty(quantiles: np.ndarray, regime_info: Dict,
 
 def get_market_info_from_yfinance(symbol: str) -> Dict:
     """
-    Get market information from yfinance using the Market class and other features.
+    Get market information from yfinance using the recommended API methods.
     
     Args:
         symbol (str): Market symbol (e.g., '^GSPC', 'EURUSD=X', 'BTC-USD')
@@ -4561,16 +4547,21 @@ def get_market_info_from_yfinance(symbol: str) -> Dict:
     try:
         ticker = yf.Ticker(symbol)
         
-        # Get basic info with retry
-        info = retry_yfinance_request(lambda: ticker.info)
+        # Get basic info with retry - use get_info() method as recommended
+        info = retry_yfinance_request(lambda: ticker.get_info())
         
-        # Get current market data with retry
-        hist = retry_yfinance_request(lambda: ticker.history(period="1d"))
+        # Get current market data with retry - use get_history_metadata() for better reliability
+        try:
+            hist_metadata = retry_yfinance_request(lambda: ticker.get_history_metadata())
+            hist = retry_yfinance_request(lambda: ticker.history(period="1d"))
+        except Exception as e:
+            print(f"Error fetching history for {symbol}: {str(e)}")
+            hist = None
         
         # Get additional market data
         market_data = {}
         
-        if not hist.empty:
+        if hist is not None and not hist.empty:
             market_data.update({
                 'current_price': hist['Close'].iloc[-1],
                 'open_price': hist['Open'].iloc[-1],
@@ -4581,35 +4572,75 @@ def get_market_info_from_yfinance(symbol: str) -> Dict:
                 'change_percent': ((hist['Close'].iloc[-1] - hist['Open'].iloc[-1]) / hist['Open'].iloc[-1]) * 100
             })
         
-        # Get news if available with retry
+        # Get news if available with retry - use get_news() method
         try:
-            news = retry_yfinance_request(lambda: ticker.news)
+            news = retry_yfinance_request(lambda: ticker.get_news())
             market_data['news_count'] = len(news) if news else 0
         except Exception as e:
             print(f"Error fetching news for {symbol}: {str(e)}")
             market_data['news_count'] = 0
         
-        # Get recommendations if available with retry
-        try:
-            recommendations = retry_yfinance_request(lambda: ticker.recommendations)
-            market_data['recommendations'] = recommendations.tail(5).to_dict('records') if not recommendations.empty else []
-        except Exception as e:
-            print(f"Error fetching recommendations for {symbol}: {str(e)}")
-            market_data['recommendations'] = []
+        # Skip earnings and recommendations for symbols that typically don't have them
+        symbols_without_earnings = ['^', '=', 'F', 'X', 'USD', 'EUR', 'GBP', 'JPY', 'BTC', 'ETH', 'GC', 'SI', 'CL', 'NG']
+        skip_earnings = any(symbol in symbol.upper() for symbol in symbols_without_earnings)
         
-        # Get earnings info if available with retry
-        try:
-            earnings = retry_yfinance_request(lambda: ticker.earnings)
-            market_data['earnings'] = earnings.tail(4).to_dict('records') if not earnings.empty else []
-        except Exception as e:
-            print(f"Error fetching earnings for {symbol}: {str(e)}")
+        if skip_earnings:
             market_data['earnings'] = []
+            market_data['recommendations'] = []
+        else:
+            # Get recommendations if available with retry - use get_recommendations() method
+            try:
+                recommendations = retry_yfinance_request(lambda: ticker.get_recommendations())
+                if recommendations is not None and hasattr(recommendations, 'empty') and not recommendations.empty:
+                    market_data['recommendations'] = recommendations.tail(5).to_dict('records')
+                else:
+                    market_data['recommendations'] = []
+            except Exception as e:
+                print(f"Error fetching recommendations for {symbol}: {str(e)}")
+                market_data['recommendations'] = []
+            
+            # Get earnings info if available with retry - use get_earnings() method
+            try:
+                earnings = retry_yfinance_request(lambda: ticker.get_earnings())
+                # Check if earnings is None or empty before accessing .empty
+                if earnings is not None and hasattr(earnings, 'empty') and not earnings.empty:
+                    market_data['earnings'] = earnings.tail(4).to_dict('records')
+                else:
+                    market_data['earnings'] = []
+            except Exception as e:
+                print(f"Error fetching earnings for {symbol}: {str(e)}")
+                market_data['earnings'] = []
+        
+        # Get additional data based on symbol type
+        
+        # For stocks, try to get dividends and splits
+        if not skip_earnings:
+            try:
+                dividends = retry_yfinance_request(lambda: ticker.get_dividends())
+                if dividends is not None and hasattr(dividends, 'empty') and not dividends.empty:
+                    additional_data['dividends'] = dividends.tail(4).to_dict('records')
+                else:
+                    additional_data['dividends'] = []
+            except Exception as e:
+                print(f"Error fetching dividends for {symbol}: {str(e)}")
+                additional_data['dividends'] = []
+            
+            try:
+                splits = retry_yfinance_request(lambda: ticker.get_splits())
+                if splits is not None and hasattr(splits, 'empty') and not splits.empty:
+                    additional_data['splits'] = splits.tail(4).to_dict('records')
+                else:
+                    additional_data['splits'] = []
+            except Exception as e:
+                print(f"Error fetching splits for {symbol}: {str(e)}")
+                additional_data['splits'] = []
         
         # Combine all data
         result = {
             'symbol': symbol,
             'info': info,
             'market_data': market_data,
+            'additional_data': additional_data,
             'timestamp': datetime.now().isoformat()
         }
         
@@ -4701,6 +4732,52 @@ def check_market_status_simple(market_key: str) -> str:
         
     except Exception as e:
         return f"❌ Error checking market status: {str(e)}"
+
+def calculate_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Calculate technical indicators for a given DataFrame.
+    
+    Args:
+        df (pd.DataFrame): DataFrame with OHLCV data
+    
+    Returns:
+        pd.DataFrame: DataFrame with technical indicators added
+    """
+    try:
+        # Calculate moving averages
+        df['SMA_20'] = df['Close'].rolling(window=20, min_periods=1).mean()
+        df['SMA_50'] = df['Close'].rolling(window=50, min_periods=1).mean()
+        df['SMA_200'] = df['Close'].rolling(window=200, min_periods=1).mean()
+        
+        # Calculate RSI
+        df['RSI'] = calculate_rsi(df['Close'])
+        
+        # Calculate MACD
+        df['MACD'], df['MACD_Signal'] = calculate_macd(df['Close'])
+        
+        # Calculate Bollinger Bands
+        df['BB_Upper'], df['BB_Middle'], df['BB_Lower'] = calculate_bollinger_bands(df['Close'])
+        
+        # Calculate additional volatility metrics
+        df['Annualized_Vol'] = df['Volatility'] * np.sqrt(252)
+        
+        # Calculate drawdown metrics
+        df['Rolling_Max'] = df['Close'].rolling(window=len(df), min_periods=1).max()
+        df['Drawdown'] = (df['Close'] - df['Rolling_Max']) / df['Rolling_Max']
+        df['Max_Drawdown'] = df['Drawdown'].rolling(window=len(df), min_periods=1).min()
+        
+        # Calculate liquidity metrics
+        df['Avg_Daily_Volume'] = df['Volume'].rolling(window=20, min_periods=1).mean()
+        df['Volume_Volatility'] = df['Volume'].rolling(window=20, min_periods=1).std()
+        
+        # Fill any remaining NaN values
+        df = df.fillna(method='ffill').fillna(method='bfill')
+        
+        return df
+        
+    except Exception as e:
+        print(f"Error calculating technical indicators: {str(e)}")
+        return df
 
 if __name__ == "__main__":
     import signal
