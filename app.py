@@ -1540,7 +1540,7 @@ def make_prediction_enhanced(symbol: str, timeframe: str = "1d", prediction_days
                 ]])
                 advanced_uncertainties = calculate_advanced_uncertainty(
                     dummy_quantiles, historical_volatility, market_conditions
-                )
+                    )
                 
                 print(f"Technical strategy completed: {len(final_pred)} predictions generated")
                 
@@ -2002,7 +2002,7 @@ def get_market_data(symbol: str = "^GSPC", lookback_days: int = 365) -> pd.DataF
         else:
             print(f"Warning: No data returned for {symbol}")
             df = pd.DataFrame()
-        
+            
         return df
     except Exception as e:
         print(f"Warning: Could not fetch market data for {symbol}: {str(e)}")
@@ -2995,24 +2995,20 @@ The **Advanced Stock Prediction System** is a cutting-edge AI-powered platform w
                         value="Select a market and click 'Check Market Status' to see current trading status.",
                         label="Market Status Result"
                     )
-            
             # Enhanced Market Information Section
             with gr.Accordion("🌍 Enhanced Market Information", open=False):
                 with gr.Row():
                     with gr.Column():
                         gr.Markdown("### Market Summary")
                         market_summary_display = gr.JSON(label="Market Summary", value={})
-                        
                         def update_market_summary():
                             """Update market summary with enhanced yfinance data"""
                             return get_enhanced_market_summary()
-                        
                         update_market_summary_btn = gr.Button("🔄 Update Market Summary")
                         update_market_summary_btn.click(
                             fn=update_market_summary,
                             outputs=[market_summary_display]
                         )
-                    
                     with gr.Column():
                         gr.Markdown("### Market Types Supported")
                         gr.Markdown("""
@@ -4607,6 +4603,8 @@ def get_market_info_from_yfinance(symbol: str) -> Dict:
         symbols_without_earnings = ['^', '=', 'F', 'X', 'USD', 'EUR', 'GBP', 'JPY', 'BTC', 'ETH', 'GC', 'SI', 'CL', 'NG']
         skip_earnings = any(symbol in symbol.upper() for symbol in symbols_without_earnings)
         
+        additional_data = {}
+
         if skip_earnings:
             market_data['earnings'] = []
             market_data['recommendations'] = []
@@ -4621,7 +4619,7 @@ def get_market_info_from_yfinance(symbol: str) -> Dict:
             except Exception as e:
                 print(f"Error fetching recommendations for {symbol}: {str(e)}")
                 market_data['recommendations'] = []
-            
+
             # Get earnings info if available with retry - use get_earnings() method
             try:
                 earnings = retry_yfinance_request(lambda: ticker.get_earnings())
@@ -4633,11 +4631,8 @@ def get_market_info_from_yfinance(symbol: str) -> Dict:
             except Exception as e:
                 print(f"Error fetching earnings for {symbol}: {str(e)}")
                 market_data['earnings'] = []
-        
-        # Get additional data based on symbol type
-        
-        # For stocks, try to get dividends and splits
-        if not skip_earnings:
+
+            # For stocks, try to get dividends and splits
             try:
                 dividends = retry_yfinance_request(lambda: ticker.get_dividends())
                 if dividends is not None and hasattr(dividends, 'empty') and not dividends.empty:
