@@ -2974,33 +2974,65 @@ The **Advanced Stock Prediction System** is a cutting-edge AI-powered platform w
         
         gr.Markdown("---")  # Add a separator
         
-        # Add market status message with periodic updates
-        market_status_display = gr.Markdown(
-            value=get_market_status_display()
-        )
-        
-        # Note: Market status updates automatically in the background thread every 10 minutes
-        # The display can be manually refreshed by users if needed
-        
-        # Add simple market status check feature
+        # Add comprehensive market information section with nested accordions
         with gr.Accordion("🌎 Global Market Information", open=False): 
-            with gr.Column(scale=1):
-                gr.Markdown("### 📊 Quick Market Status Check")
-                # Create user-friendly market choices
-                market_choices = [(config['name'], key) for key, config in MARKET_CONFIGS.items()]
-                market_dropdown = gr.Dropdown(
-                    choices=market_choices,
-                    label="Select Market",
-                    value="US_STOCKS",
-                    info="Choose a market to check its current status"
-                )
-                check_market_btn = gr.Button("🔍 Check Market Status", variant="primary")
+            # Quick Market Status Check Section
+            with gr.Accordion("📊 Quick Market Status Check", open=False):
+                with gr.Column(scale=1):
+                    gr.Markdown("### 📊 Quick Market Status Check")
+                    # Create user-friendly market choices
+                    market_choices = [(config['name'], key) for key, config in MARKET_CONFIGS.items()]
+                    market_dropdown = gr.Dropdown(
+                        choices=market_choices,
+                        label="Select Market",
+                        value="US_STOCKS",
+                        info="Choose a market to check its current status"
+                    )
+                    check_market_btn = gr.Button("🔍 Check Market Status", variant="primary")
+                
+                with gr.Column(scale=2):
+                    market_status_result = gr.Markdown(
+                        value="Select a market and click 'Check Market Status' to see current trading status.",
+                        label="Market Status Result"
+                    )
             
-            with gr.Column(scale=2):
-                market_status_result = gr.Markdown(
-                    value="Select a market and click 'Check Market Status' to see current trading status.",
-                    label="Market Status Result"
-                )
+            # Enhanced Market Information Section
+            with gr.Accordion("🌍 Enhanced Market Information", open=False):
+                with gr.Row():
+                    with gr.Column():
+                        gr.Markdown("### Market Summary")
+                        market_summary_display = gr.JSON(label="Market Summary", value={})
+                        
+                        def update_market_summary():
+                            """Update market summary with enhanced yfinance data"""
+                            return get_enhanced_market_summary()
+                        
+                        update_market_summary_btn = gr.Button("🔄 Update Market Summary")
+                        update_market_summary_btn.click(
+                            fn=update_market_summary,
+                            outputs=[market_summary_display]
+                        )
+                    
+                    with gr.Column():
+                        gr.Markdown("### Market Types Supported")
+                        gr.Markdown("""
+                        **📈 Stock Markets:**
+                        - **US Stocks** (NYSE, NASDAQ, AMEX): 9:30 AM - 4:00 PM ET
+                        - **European Markets** (London, Frankfurt, Paris): 8:00 AM - 4:30 PM GMT
+                        - **Asian Markets** (Tokyo, Hong Kong, Shanghai): 9:00 AM - 3:30 PM JST
+                        
+                        **📊 24/7 Markets:**
+                        - **Forex** (Global Currency Exchange): 24/7 trading
+                        - **Cryptocurrency** (Bitcoin, Ethereum, Altcoins): 24/7 trading
+                        - **US Futures** (CME, ICE, CBOT): 24/7 trading
+                        - **Commodities** (Gold, Silver, Oil, Natural Gas): 24/7 trading
+                        
+                        **💡 Features:**
+                        - Real-time market status updates every 10 minutes
+                        - Timezone-aware calculations
+                        - Market-specific trading hours
+                        - Enhanced data from yfinance API
+                        """)
         
         # Connect the button to the function
         check_market_btn.click(
@@ -3016,17 +3048,8 @@ The **Advanced Stock Prediction System** is a cutting-edge AI-powered platform w
             with gr.Row():
                 with gr.Column():
                     gr.Markdown("### Market Summary")
-                    market_summary_display = gr.JSON(label="Market Summary", value={})
-                    
-                    def update_market_summary():
-                        """Update market summary with enhanced yfinance data"""
-                        return get_enhanced_market_summary()
-                    
-                    update_market_summary_btn = gr.Button("🔄 Update Market Summary")
-                    update_market_summary_btn.click(
-                        fn=update_market_summary,
-                        outputs=[market_summary_display]
-                    )
+                    # This section is now handled in the nested accordion above
+                    gr.Markdown("Market summary functionality is available in the 'Enhanced Market Information' section above.")
                 
                 with gr.Column():
                     gr.Markdown("### Market Types Supported")
