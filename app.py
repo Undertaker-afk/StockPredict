@@ -4740,6 +4740,23 @@ def calculate_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
         print(f"Error calculating technical indicators: {str(e)}")
         return df
 
+def get_fundamental_data(symbol: str) -> dict:
+    """
+    Fetch fundamental data for a given symbol using yfinance's info property.
+    Returns a dictionary of fundamental data, or an empty dict if unavailable.
+    """
+    try:
+        ticker = yf.Ticker(symbol)
+        info = retry_yfinance_request(lambda: ticker.info)
+        if info is not None and isinstance(info, dict):
+            return info
+        else:
+            print(f"No fundamental info available for {symbol}")
+            return {}
+    except Exception as e:
+        print(f"Error fetching fundamental data for {symbol}: {str(e)}")
+        return {}  # Fallback to empty dict
+
 if __name__ == "__main__":
     import signal
     import atexit
