@@ -2098,6 +2098,11 @@ def make_prediction_enhanced(symbol: str, timeframe: str = "1d", prediction_days
                 'uncertainty': final_uncertainty.tolist(),
                 'volume': volume_pred.tolist() if volume_pred is not None else None
             },
+            'historical': {
+                'dates': df.index.strftime('%Y-%m-%d %H:%M:%S').tolist(),
+                'prices': df['Close'].tolist(),
+                'volume': df['Volume'].tolist() if 'Volume' in df.columns else None
+            },
             'technical_indicators': {
                 'predictions': {k: v.tolist() for k, v in technical_predictions.items()},
                 'uncertainties': {k: v.tolist() for k, v in technical_uncertainties.items()}
@@ -3407,6 +3412,8 @@ The **Advanced Stock Prediction System** is a cutting-edge AI-powered platform w
                     
                     with gr.Column():
                         daily_plot = gr.Plot(label="Analysis and Prediction")
+                        daily_historical_json = gr.JSON(label="Historical Data")
+                        daily_predicted_json = gr.JSON(label="Predicted Data")
                 
                 with gr.Row():
                     with gr.Column():
@@ -3474,6 +3481,8 @@ The **Advanced Stock Prediction System** is a cutting-edge AI-powered platform w
                     with gr.Column():
                         hourly_plot = gr.Plot(label="Analysis and Prediction")
                         hourly_signals = gr.JSON(label="Trading Signals")
+                        hourly_historical_json = gr.JSON(label="Historical Data")
+                        hourly_predicted_json = gr.JSON(label="Predicted Data")
                 
                 with gr.Row():
                     with gr.Column():
@@ -3539,6 +3548,8 @@ The **Advanced Stock Prediction System** is a cutting-edge AI-powered platform w
                     with gr.Column():
                         min15_plot = gr.Plot(label="Analysis and Prediction")
                         min15_signals = gr.JSON(label="Trading Signals")
+                        min15_historical_json = gr.JSON(label="Historical Data")
+                        min15_predicted_json = gr.JSON(label="Predicted Data")
                 
                 with gr.Row():
                     with gr.Column():
@@ -3681,7 +3692,11 @@ The **Advanced Stock Prediction System** is a cutting-edge AI-powered platform w
                 
                 advanced_signals = signals.get("advanced_signals", {})
                 
-                return basic_signals, fig, product_metrics, risk_metrics, sector_metrics, regime_metrics, stress_results, ensemble_metrics, advanced_signals
+                # In analyze_stock, extract historical and predicted values for UI
+                historical = signals.get('historical', {})
+                predicted = signals.get('prediction', {})
+                
+                return basic_signals, fig, product_metrics, risk_metrics, sector_metrics, regime_metrics, stress_results, ensemble_metrics, advanced_signals, historical, predicted
             except Exception as e:
                 error_message = str(e)
                 if "Market is currently closed" in error_message:
@@ -3696,7 +3711,7 @@ The **Advanced Stock Prediction System** is a cutting-edge AI-powered platform w
         def daily_analysis(s: str, pd: int, ld: int, st: str, ue: bool, urd: bool, ust: bool,
                           rfr: float, mi: str, cw: float, tw: float, sw: float,
                           rrp: int, usm: bool, smt: str, sww: float, sa: float,
-                          uc: bool, us: bool) -> Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict]:
+                          uc: bool, us: bool) -> Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict, Dict, Dict]:
             """
             Process daily timeframe stock analysis with enhanced features.
 
@@ -3743,7 +3758,7 @@ The **Advanced Stock Prediction System** is a cutting-edge AI-powered platform w
                     When True, includes news sentiment analysis in the prediction model
 
             Returns:
-                Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict]: Analysis results containing:
+                Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict, Dict, Dict]: Analysis results containing:
                     [0] Dict: Trading Signals - Output value for the "Trading Signals" Json component
                         Contains RSI, MACD, Bollinger Bands, SMA, and overall trading signals
                     [1] go.Figure: Analysis and Prediction - Output value for the "Analysis and Prediction" Plot component
@@ -3762,13 +3777,17 @@ The **Advanced Stock Prediction System** is a cutting-edge AI-powered platform w
                         Ensemble method configuration and performance results
                     [8] Dict: Advanced Trading Signals - Output value for the "Advanced Trading Signals" Json component
                         Advanced trading signals with confidence levels and sophisticated indicators
+                    [9] Dict: Historical Data - Output value for the "Historical Data" Json component
+                        Historical data for the selected stock
+                    [10] Dict: Predicted Data - Output value for the "Predicted Data" Json component
+                        Predicted data for the selected stock
 
             Raises:
                 gr.Error: If data cannot be fetched, insufficient data points, or other analysis errors
                     Common errors include invalid symbols, market closure, or insufficient historical data
 
             Example:
-                >>> signals, plot, metrics, risk, sector, regime, stress, ensemble, advanced = daily_analysis(
+                >>> signals, plot, metrics, risk, sector, regime, stress, ensemble, advanced, historical, predicted = daily_analysis(
                 ...     "AAPL", 30, 365, "chronos", True, True, True, 0.02, "^GSPC", 0.6, 0.2, 0.2, 4, True, "exponential", 5, 0.3, True, True
                 ... )
 
@@ -3792,14 +3811,14 @@ The **Advanced Stock Prediction System** is a cutting-edge AI-powered platform w
                    random_real_points, use_smoothing, smoothing_type, smoothing_window, smoothing_alpha,
                    use_covariates, use_sentiment],
             outputs=[daily_signals, daily_plot, daily_metrics, daily_risk_metrics, daily_sector_metrics,
-                    daily_regime_metrics, daily_stress_results, daily_ensemble_metrics, daily_signals_advanced]
+                    daily_regime_metrics, daily_stress_results, daily_ensemble_metrics, daily_signals_advanced, daily_historical_json, daily_predicted_json]
         )
         
         # Hourly analysis button click
         def hourly_analysis(s: str, pd: int, ld: int, st: str, ue: bool, urd: bool, ust: bool,
                            rfr: float, mi: str, cw: float, tw: float, sw: float,
                            rrp: int, usm: bool, smt: str, sww: float, sa: float,
-                           uc: bool, us: bool) -> Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict]:
+                           uc: bool, us: bool) -> Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict, Dict, Dict]:
             """
             Process hourly timeframe stock analysis with enhanced features.
 
@@ -3848,7 +3867,7 @@ The **Advanced Stock Prediction System** is a cutting-edge AI-powered platform w
                     When True, includes news sentiment analysis in the prediction model
 
             Returns:
-                Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict]: Analysis results containing:
+                Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict, Dict, Dict]: Analysis results containing:
                     [0] Dict: Trading Signals - Output value for the "Trading Signals" Json component
                         Basic trading signals optimized for hourly timeframes
                     [1] go.Figure: Analysis and Prediction - Output value for the "Analysis and Prediction" Plot component
@@ -3867,13 +3886,17 @@ The **Advanced Stock Prediction System** is a cutting-edge AI-powered platform w
                         Ensemble analysis configuration and results
                     [8] Dict: Advanced Trading Signals - Output value for the "Advanced Trading Signals" Json component
                         Advanced signals with intraday-specific indicators
+                    [9] Dict: Historical Data - Output value for the "Historical Data" Json component
+                        Historical data for the selected stock
+                    [10] Dict: Predicted Data - Output value for the "Predicted Data" Json component
+                        Predicted data for the selected stock
 
             Raises:
                 gr.Error: If market is closed, insufficient data, or analysis errors
                     Hourly data is only available during market hours (9:30 AM - 4:00 PM ET)
 
             Example:
-                >>> signals, plot, metrics, risk, sector, regime, stress, ensemble, advanced = hourly_analysis(
+                >>> signals, plot, metrics, risk, sector, regime, stress, ensemble, advanced, historical, predicted = hourly_analysis(
                 ...     "AAPL", 3, 14, "chronos", True, True, True, 0.02, "^GSPC", 0.6, 0.2, 0.2, 4, True, "exponential", 5, 0.3, True, True
                 ... )
 
@@ -3898,14 +3921,14 @@ The **Advanced Stock Prediction System** is a cutting-edge AI-powered platform w
                    random_real_points, use_smoothing, smoothing_type, smoothing_window, smoothing_alpha,
                    use_covariates, use_sentiment],
             outputs=[hourly_signals, hourly_plot, hourly_metrics, hourly_risk_metrics, hourly_sector_metrics,
-                    hourly_regime_metrics, hourly_stress_results, hourly_ensemble_metrics, hourly_signals_advanced]
+                    hourly_regime_metrics, hourly_stress_results, hourly_ensemble_metrics, hourly_signals_advanced, hourly_historical_json, hourly_predicted_json]
         )
         
         # 15-minute analysis button click
         def min15_analysis(s: str, pd: int, ld: int, st: str, ue: bool, urd: bool, ust: bool,
                           rfr: float, mi: str, cw: float, tw: float, sw: float,
                           rrp: int, usm: bool, smt: str, sww: float, sa: float,
-                          uc: bool, us: bool) -> Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict]:
+                          uc: bool, us: bool) -> Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict, Dict, Dict]:
             """
             Process 15-minute timeframe stock analysis with enhanced features.
 
@@ -3951,7 +3974,7 @@ The **Advanced Stock Prediction System** is a cutting-edge AI-powered platform w
                     Alpha parameter for exponential smoothing methods
 
             Returns:
-                Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict]: Analysis results containing:
+                Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict, Dict, Dict]: Analysis results containing:
                     [0] Dict: Trading Signals - Output value for the "Trading Signals" Json component
                         Basic trading signals optimized for 15-minute timeframes
                     [1] go.Figure: Analysis and Prediction - Output value for the "Analysis and Prediction" Plot component
@@ -3970,13 +3993,17 @@ The **Advanced Stock Prediction System** is a cutting-edge AI-powered platform w
                         Ensemble analysis configuration and results
                     [8] Dict: Advanced Trading Signals - Output value for the "Advanced Trading Signals" Json component
                         Advanced signals with 15-minute-specific indicators
+                    [9] Dict: Historical Data - Output value for the "Historical Data" Json component
+                        Historical data for the selected stock
+                    [10] Dict: Predicted Data - Output value for the "Predicted Data" Json component
+                        Predicted data for the selected stock
 
             Raises:
                 gr.Error: If market is closed, insufficient data points, or analysis errors
                     15-minute data requires at least 64 data points and is only available during market hours
 
             Example:
-                >>> signals, plot, metrics, risk, sector, regime, stress, ensemble, advanced = min15_analysis(
+                >>> signals, plot, metrics, risk, sector, regime, stress, ensemble, advanced, historical, predicted = min15_analysis(
                 ...     "AAPL", 1, 3, "chronos", True, True, True, 0.02, "^GSPC", 0.6, 0.2, 0.2, 4, True, "exponential", 5, 0.3
                 ... )
 
@@ -4000,7 +4027,7 @@ The **Advanced Stock Prediction System** is a cutting-edge AI-powered platform w
                    chronos_weight, technical_weight, statistical_weight,
                    random_real_points, use_smoothing, smoothing_type, smoothing_window, smoothing_alpha],
             outputs=[min15_signals, min15_plot, min15_metrics, min15_risk_metrics, min15_sector_metrics,
-                    min15_regime_metrics, min15_stress_results, min15_ensemble_metrics, min15_signals_advanced]
+                    min15_regime_metrics, min15_stress_results, min15_ensemble_metrics, min15_signals_advanced, min15_historical_json, min15_predicted_json]
         )
     
     return demo
