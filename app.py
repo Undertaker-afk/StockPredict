@@ -2063,22 +2063,23 @@ def make_prediction_enhanced(symbol: str, timeframe: str = "1d", prediction_days
                 text=f'Enhanced Stock Prediction for {symbol}',
                 x=0.5,
                 xanchor='center',
-                font=dict(size=20, color='black'),
-                y=0.98
+                font=dict(size=18, color='black'),
+                y=0.95  # Moved down slightly to avoid overlap
             ),
             height=1000, 
             showlegend=True,
             legend=dict(
                 orientation="h",
-                yanchor="bottom",
-                y=0.99, 
-                xanchor="right",
-                x=1,
-                bgcolor='rgba(255,255,255,0.8)',  
+                yanchor="top",
+                y=-0.15,  # Position legend below all subplots
+                xanchor="center",
+                x=0.5,  # Center the legend horizontally
+                bgcolor='rgba(255,255,255,0.9)',  
                 bordercolor='black',
-                borderwidth=1
+                borderwidth=1,
+                font=dict(size=10)  # Smaller font for better fit
             ),
-            margin=dict(t=120, b=80, l=80, r=80),  
+            margin=dict(t=120, b=150, l=80, r=80),  # Increased bottom margin for legend  
             autosize=True,  
             hovermode='x unified'  
         )
@@ -2111,9 +2112,9 @@ def make_prediction_enhanced(symbol: str, timeframe: str = "1d", prediction_days
         for i in range(len(fig.layout.annotations)):
             if i < 3: 
                 fig.layout.annotations[i].update(
-                    font=dict(size=14, color='darkblue', family='Arial, sans-serif'),
-                    y=fig.layout.annotations[i].y + 0.02,  
-                    bgcolor='rgba(255,255,255,0.8)', 
+                    font=dict(size=13, color='darkblue', family='Arial, sans-serif'),
+                    y=fig.layout.annotations[i].y + 0.01,  # Reduced adjustment to prevent overlap
+                    bgcolor='rgba(255,255,255,0.9)', 
                     bordercolor='lightgray',
                     borderwidth=1
                 )
