@@ -3440,12 +3440,7 @@ The **Advanced Stock Prediction System** is a cutting-edge AI-powered platform w
                         """)
                     
                     with gr.Column():
-                        daily_plot = gr.Plot(
-                            label="Analysis and Prediction",
-                            container=True,
-                            scale=1,
-                            height=600
-                        )
+                        daily_plot = gr.Plot(label="Analysis and Prediction")
                         daily_historical_json = gr.JSON(label="Historical Data")
                         daily_predicted_json = gr.JSON(label="Predicted Data")
                 
@@ -3513,12 +3508,7 @@ The **Advanced Stock Prediction System** is a cutting-edge AI-powered platform w
                         """)
                     
                     with gr.Column():
-                        hourly_plot = gr.Plot(
-                            label="Analysis and Prediction",
-                            container=True,
-                            scale=1,
-                            height=600
-                        )
+                        hourly_plot = gr.Plot(label="Analysis and Prediction")
                         hourly_signals = gr.JSON(label="Trading Signals")
                         hourly_historical_json = gr.JSON(label="Historical Data")
                         hourly_predicted_json = gr.JSON(label="Predicted Data")
@@ -3585,12 +3575,7 @@ The **Advanced Stock Prediction System** is a cutting-edge AI-powered platform w
                         """)
                     
                     with gr.Column():
-                        min15_plot = gr.Plot(
-                            label="Analysis and Prediction",
-                            container=True,
-                            scale=1,
-                            height=600
-                        )
+                        min15_plot = gr.Plot(label="Analysis and Prediction")
                         min15_signals = gr.JSON(label="Trading Signals")
                         min15_historical_json = gr.JSON(label="Historical Data")
                         min15_predicted_json = gr.JSON(label="Predicted Data")
