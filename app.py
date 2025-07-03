@@ -1828,7 +1828,7 @@ def make_prediction_enhanced(symbol: str, timeframe: str = "1d", prediction_days
         # Create enhanced visualization with uncertainties integrated
         fig = make_subplots(rows=3, cols=1, 
                            shared_xaxes=True,
-                           vertical_spacing=0.05,
+                           vertical_spacing=0.12, 
                            subplot_titles=('Price Prediction with Uncertainty', 'Technical Indicators with Uncertainty', 'Volume with Uncertainty'))
         
         # Add historical price
@@ -2057,38 +2057,67 @@ def make_prediction_enhanced(symbol: str, timeframe: str = "1d", prediction_days
             fig.add_hline(y=avg_volume, line_dash="dash", line_color="blue", 
                          annotation_text=f"Avg Volume: {avg_volume:,.0f}", row=3, col=1)
         
-        # Update layout with better titles and axis labels
+        
         fig.update_layout(
-            title=f'Enhanced Stock Prediction for {symbol}',
-            height=900,  # Adjusted height for 3 subplots
+            title=dict(
+                text=f'Enhanced Stock Prediction for {symbol}',
+                x=0.5,
+                xanchor='center',
+                font=dict(size=20, color='black'),
+                y=0.98
+            ),
+            height=1000, 
             showlegend=True,
             legend=dict(
                 orientation="h",
                 yanchor="bottom",
-                y=1.02,
+                y=0.99, 
                 xanchor="right",
-                x=1
-            )
+                x=1,
+                bgcolor='rgba(255,255,255,0.8)',  
+                bordercolor='black',
+                borderwidth=1
+            ),
+            margin=dict(t=120, b=80, l=80, r=80),  
+            autosize=True,  
+            hovermode='x unified'  
         )
         
-        # Update subplot titles and axis labels
-        fig.update_xaxes(title_text="Date", row=3, col=1)
-        fig.update_yaxes(title_text="Price ($)", row=1, col=1)
-        fig.update_yaxes(title_text="Technical Indicators", row=2, col=1)
-        fig.update_yaxes(title_text="Volume", row=3, col=1)
-        
-        # Update subplot titles
-        fig.update_annotations(
-            dict(
-                text="Price Prediction with Uncertainty",
-                x=0.5,
-                y=0.95,
-                xref="paper",
-                yref="paper",
-                showarrow=False,
-                font=dict(size=16)
-            )
+        fig.update_xaxes(
+            title_text="Date", 
+            row=3, col=1,
+            title_font=dict(size=12, color='black'),
+            tickfont=dict(size=10)
         )
+        fig.update_yaxes(
+            title_text="Price ($)", 
+            row=1, col=1,
+            title_font=dict(size=12, color='black'),
+            tickfont=dict(size=10)
+        )
+        fig.update_yaxes(
+            title_text="Technical Indicators", 
+            row=2, col=1,
+            title_font=dict(size=12, color='black'),
+            tickfont=dict(size=10)
+        )
+        fig.update_yaxes(
+            title_text="Volume", 
+            row=3, col=1,
+            title_font=dict(size=12, color='black'),
+            tickfont=dict(size=10)
+        )
+        
+        for i in range(len(fig.layout.annotations)):
+            if i < 3: 
+                fig.layout.annotations[i].update(
+                    font=dict(size=14, color='darkblue', family='Arial, sans-serif'),
+                    y=fig.layout.annotations[i].y + 0.02,  
+                    bgcolor='rgba(255,255,255,0.8)', 
+                    bordercolor='lightgray',
+                    borderwidth=1
+                )
+    
         
         # Create comprehensive trading signals
         trading_signals = {
@@ -3411,7 +3440,12 @@ The **Advanced Stock Prediction System** is a cutting-edge AI-powered platform w
                         """)
                     
                     with gr.Column():
-                        daily_plot = gr.Plot(label="Analysis and Prediction")
+                        daily_plot = gr.Plot(
+                            label="Analysis and Prediction",
+                            container=True,
+                            scale=1,
+                            height=600
+                        )
                         daily_historical_json = gr.JSON(label="Historical Data")
                         daily_predicted_json = gr.JSON(label="Predicted Data")
                 
@@ -3479,7 +3513,12 @@ The **Advanced Stock Prediction System** is a cutting-edge AI-powered platform w
                         """)
                     
                     with gr.Column():
-                        hourly_plot = gr.Plot(label="Analysis and Prediction")
+                        hourly_plot = gr.Plot(
+                            label="Analysis and Prediction",
+                            container=True,
+                            scale=1,
+                            height=600
+                        )
                         hourly_signals = gr.JSON(label="Trading Signals")
                         hourly_historical_json = gr.JSON(label="Historical Data")
                         hourly_predicted_json = gr.JSON(label="Predicted Data")
@@ -3546,7 +3585,12 @@ The **Advanced Stock Prediction System** is a cutting-edge AI-powered platform w
                         """)
                     
                     with gr.Column():
-                        min15_plot = gr.Plot(label="Analysis and Prediction")
+                        min15_plot = gr.Plot(
+                            label="Analysis and Prediction",
+                            container=True,
+                            scale=1,
+                            height=600
+                        )
                         min15_signals = gr.JSON(label="Trading Signals")
                         min15_historical_json = gr.JSON(label="Historical Data")
                         min15_predicted_json = gr.JSON(label="Predicted Data")
