@@ -8,6 +8,10 @@ from chronos import ChronosPipeline
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
+import logging
+from GoogleNews import GoogleNews
+from transformers import pipeline
+from gradio_client import Client
 import plotly.express as px
 from typing import Dict, List, Tuple, Optional, Union
 import json
@@ -60,6 +64,19 @@ try:
 except ImportError:
     GARCH_AVAILABLE = False
     print("Warning: arch not available. GARCH modeling will be simplified.")
+
+# Sentiment Analysis Configuration
+SENTIMENT_ANALYSIS_MODEL = (
+    "mrm8488/distilroberta-finetuned-financial-news-sentiment-analysis"
+)
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+logging.info(f"Using device: {DEVICE}")
+
+logging.info("Initializing sentiment analysis model...")
+sentiment_analyzer = pipeline(
+    "sentiment-analysis", model=SENTIMENT_ANALYSIS_MODEL, device=DEVICE
+)
+logging.info("Model initialized successfully")
 
 # Market status management
 @dataclass
@@ -573,6 +590,90 @@ def cleanup_on_exit():
     except Exception as e:
         print(f"Error stopping market status manager: {str(e)}")
 
+
+# Sentiment Analysis Functions
+def fetch_articles(query):
+    try:
+        logging.info(f"Fetching articles for query: '{query}'")
+        googlenews = GoogleNews(lang="en")
+        googlenews.search(query)
+        articles = googlenews.result()
+        logging.info(f"Fetched {len(articles)} articles")
+        return articles
+    except Exception as e:
+        logging.error(
+            f"Error while searching articles for query: '{query}'. Error: {e}"
+        )
+        raise gr.Error(
+            f"Unable to search articles for query: '{query}'. Try again later...",
+            duration=5,
+        )
+
+
+def analyze_article_sentiment(article):
+    logging.info(f"Analyzing sentiment for article: {article['title']}")
+    sentiment = sentiment_analyzer(article["desc"])[0]
+    article["sentiment"] = sentiment
+    return article
+
+
+def analyze_asset_sentiment(asset_name):
+    logging.info(f"Starting sentiment analysis for asset: {asset_name}")
+
+    logging.info("Fetching articles")
+    articles = fetch_articles(asset_name)
+
+    logging.info("Analyzing sentiment of each article")
+    analyzed_articles = [analyze_article_sentiment(article) for article in articles]
+
+    logging.info("Sentiment analysis completed")
+
+    return convert_to_dataframe(analyzed_articles)
+
+
+def convert_to_dataframe(analyzed_articles):
+    df = pd.DataFrame(analyzed_articles)
+    df["Title"] = df.apply(
+        lambda row: f'<a href="{row["link"]}" target="_blank">{row["title"]}</a>',
+        axis=1,
+    )
+    df["Description"] = df["desc"]
+    df["Date"] = df["date"]
+
+    def sentiment_badge(sentiment):
+        colors = {
+            "negative": "red",
+            "neutral": "gray",
+            "positive": "green",
+        }
+        color = colors.get(sentiment, "grey")
+        return f'<span style="background-color: {color}; color: white; padding: 2px 6px; border-radius: 4px;">{sentiment}</span>'
+
+    df["Sentiment"] = df["sentiment"].apply(lambda x: sentiment_badge(x["label"]))
+    return df[["Sentiment", "Title", "Description", "Date"]]
+
+
+# Web Search Function
+def search_web(query, search_type="search", num_results=4):
+    try:
+        logging.info(f"Performing web search for query: '{query}'")
+        client = Client("victor/websearch")
+        result = client.predict(
+            query=query,
+            search_type=search_type,
+            num_results=num_results,
+            api_name="/search_web"
+        )
+        logging.info("Web search completed")
+        return result
+    except Exception as e:
+        logging.error(f"Error during web search: {e}")
+        raise gr.Error(
+            f"Unable to perform web search for query: '{query}'. Try again later...",
+            duration=5,
+        )
+
+
 def get_historical_data(symbol: str, timeframe: str = "1d", lookback_days: int = 365) -> pd.DataFrame:
     """
     Fetch historical data using yfinance with enhanced support for intraday data.
@@ -853,7 +954,7 @@ def make_prediction_enhanced(symbol: str, timeframe: str = "1d", prediction_days
                            use_ensemble: bool = True, use_regime_detection: bool = True, use_stress_testing: bool = True,
                            risk_free_rate: float = 0.02, ensemble_weights: Dict = None, 
                            market_index: str = "^GSPC", use_covariates: bool = True, use_sentiment: bool = True,
-                           random_real_points: int = 4, use_smoothing: bool = True, 
+                           use_web_search: bool = False, random_real_points: int = 4, use_smoothing: bool = True, 
                            smoothing_type: str = "exponential", smoothing_window: int = 5, 
                            smoothing_alpha: float = 0.3) -> Tuple[Dict, go.Figure]:
     """
@@ -872,6 +973,7 @@ def make_prediction_enhanced(symbol: str, timeframe: str = "1d", prediction_days
         market_index (str): Market index for correlation analysis
         use_covariates (bool): Whether to use covariate data
         use_sentiment (bool): Whether to use sentiment analysis
+        use_web_search (bool): Whether to use web search analysis
         random_real_points (int): Number of random real points to include in long-horizon context
         use_smoothing (bool): Whether to apply smoothing to predictions
         smoothing_type (str): Type of smoothing to apply ('exponential', 'moving_average', 'kalman', 'savitzky_golay', 'none')
@@ -908,6 +1010,27 @@ def make_prediction_enhanced(symbol: str, timeframe: str = "1d", prediction_days
         if use_sentiment:
             print("Calculating market sentiment...")
             sentiment_data = calculate_market_sentiment(symbol, 30)
+        
+        # Calculate web search sentiment
+        web_search_data = {}
+        if use_web_search:
+            print("Calculating web search sentiment...")
+            web_search_data = calculate_web_search_sentiment(symbol, 10)
+        
+        # Combine sentiment data
+        combined_sentiment = {}
+        if sentiment_data and web_search_data:
+            # Average the sentiment scores if both are available
+            combined_sentiment = {
+                'sentiment_score': (sentiment_data.get('sentiment_score', 0) + web_search_data.get('sentiment_score', 0)) / 2,
+                'sentiment_confidence': max(sentiment_data.get('sentiment_confidence', 0), web_search_data.get('sentiment_confidence', 0)),
+                'news_samples': sentiment_data.get('sentiment_samples', 0),
+                'web_samples': web_search_data.get('web_samples', 0)
+            }
+        elif sentiment_data:
+            combined_sentiment = sentiment_data
+        elif web_search_data:
+            combined_sentiment = web_search_data
         
         # Detect market regime
         regime_info = {}
@@ -3309,6 +3432,8 @@ The **Advanced Stock Prediction System** is a cutting-edge AI-powered platform w
                                                info="Include market indices, sectors, and economic indicators")
                     use_sentiment = gr.Checkbox(label="Use Sentiment Analysis", value=True,
                                               info="Include news sentiment analysis")
+                    use_web_search = gr.Checkbox(label="Use Web Search Analysis", value=False,
+                                               info="Include web search sentiment analysis for enhanced predictions")
                     use_smoothing = gr.Checkbox(label="Use Smoothing", value=True)
                     smoothing_type = gr.Dropdown(
                         choices=["exponential", "moving_average", "kalman", "savitzky_golay", 
@@ -3609,7 +3734,7 @@ The **Advanced Stock Prediction System** is a cutting-edge AI-powered platform w
                          use_ensemble, use_regime_detection, use_stress_testing,
                          risk_free_rate, market_index, chronos_weight, technical_weight, statistical_weight,
                          random_real_points, use_smoothing, smoothing_type, smoothing_window, smoothing_alpha,
-                         use_covariates=True, use_sentiment=True):
+                         use_covariates=True, use_sentiment=True, use_web_search=False):
             try:
                 # Create ensemble weights
                 ensemble_weights = {
@@ -3636,6 +3761,7 @@ The **Advanced Stock Prediction System** is a cutting-edge AI-powered platform w
                     market_index=market_index,
                     use_covariates=use_covariates,
                     use_sentiment=use_sentiment,
+                    use_web_search=use_web_search,
                     random_real_points=random_real_points,
                     use_smoothing=use_smoothing,
                     smoothing_type=smoothing_type,
@@ -4059,6 +4185,70 @@ The **Advanced Stock Prediction System** is a cutting-edge AI-powered platform w
             outputs=[min15_signals, min15_plot, min15_metrics, min15_risk_metrics, min15_sector_metrics,
                     min15_regime_metrics, min15_stress_results, min15_ensemble_metrics, min15_signals_advanced, min15_historical_json, min15_predicted_json]
         )
+        
+        # Sentiment Analysis Tab
+        with gr.TabItem("Sentiment Analysis"):
+            with gr.Row():
+                with gr.Column():
+                    sentiment_asset = gr.Textbox(label="Asset Name", value="Apple", placeholder="Enter asset name (e.g., Apple, Bitcoin)")
+                    sentiment_analyze_btn = gr.Button("Analyze Sentiment", variant="primary")
+                    gr.Markdown("""
+                    **Sentiment Analysis Features:**
+                    - Fetches recent news articles from Google News
+                    - Analyzes sentiment using financial news model
+                    - Displays sentiment badges (Positive/Negative/Neutral)
+                    - Shows article titles, descriptions, and dates
+                    - Clickable article links for full reading
+                    """)
+                
+                with gr.Column():
+                    sentiment_output = gr.Dataframe(
+                        headers=["Sentiment", "Title", "Description", "Date"],
+                        datatype=["markdown", "html", "markdown", "markdown"],
+                        wrap=False,
+                        label="Sentiment Analysis Results"
+                    )
+            
+            sentiment_analyze_btn.click(
+                fn=analyze_asset_sentiment,
+                inputs=[sentiment_asset],
+                outputs=[sentiment_output]
+            )
+        
+        # Web Search Tab
+        with gr.TabItem("Web Search"):
+            with gr.Row():
+                with gr.Column():
+                    search_query = gr.Textbox(label="Search Query", placeholder="Enter search query")
+                    search_type = gr.Dropdown(
+                        choices=["search", "news", "images", "videos"],
+                        label="Search Type",
+                        value="search"
+                    )
+                    num_results = gr.Slider(
+                        minimum=1,
+                        maximum=10,
+                        value=4,
+                        step=1,
+                        label="Number of Results"
+                    )
+                    web_search_btn = gr.Button("Search Web", variant="primary")
+                    gr.Markdown("""
+                    **Web Search Features:**
+                    - Searches the web using advanced AI
+                    - Supports different search types (search, news, images, videos)
+                    - Configurable number of results
+                    - Returns relevant search results
+                    """)
+                
+                with gr.Column():
+                    web_search_output = gr.JSON(label="Search Results")
+            
+            web_search_btn.click(
+                fn=search_web,
+                inputs=[search_query, search_type, num_results],
+                outputs=[web_search_output]
+            )
     
     return demo
 
@@ -4166,7 +4356,7 @@ def get_enhanced_covariate_data(symbol: str, timeframe: str = "1d", lookback_day
 
 def calculate_market_sentiment(symbol: str, lookback_days: int = 30) -> Dict[str, float]:
     """
-    Calculate market sentiment using news sentiment analysis and social media data.
+    Calculate market sentiment using news sentiment analysis with GoogleNews and transformer models.
     
     Args:
         symbol (str): Stock symbol
@@ -4175,29 +4365,46 @@ def calculate_market_sentiment(symbol: str, lookback_days: int = 30) -> Dict[str
     Returns:
         Dict[str, float]: Sentiment metrics
     """
-    if not SENTIMENT_AVAILABLE:
-        return {'sentiment_score': 0.0, 'sentiment_confidence': 0.0}
-    
     try:
         sentiment_scores = []
         
-        # Get news sentiment (simplified approach using yfinance news)
+        # Get news sentiment using GoogleNews and transformer model
         try:
-            ticker = yf.Ticker(symbol)
-            news = retry_yfinance_request(lambda: ticker.news)
+            print(f"Fetching articles for sentiment analysis: {symbol}")
+            articles = fetch_articles(symbol)
             
-            if news:
-                for article in news[:10]:  # Analyze last 10 news articles
-                    title = article.get('title', '')
-                    summary = article.get('summary', '')
-                    text = f"{title} {summary}"
-                    
-                    # Calculate sentiment using TextBlob
-                    blob = TextBlob(text)
-                    sentiment_scores.append(blob.sentiment.polarity)
+            if articles:
+                for article in articles[:10]:  # Analyze last 10 news articles
+                    desc = article.get('desc', '')
+                    if desc:
+                        sentiment = sentiment_analyzer(desc)[0]
+                        # Convert sentiment label to score
+                        if sentiment['label'] == 'positive':
+                            score = sentiment['score']
+                        elif sentiment['label'] == 'negative':
+                            score = -sentiment['score']
+                        else:  # neutral
+                            score = 0.0
+                        sentiment_scores.append(score)
+                        
         except Exception as e:
-            print(f"Error fetching news sentiment: {str(e)}")
-            # Don't fail completely, just log the error
+            print(f"Error in GoogleNews sentiment analysis: {str(e)}")
+            # Fallback to yfinance news with TextBlob
+            try:
+                ticker = yf.Ticker(symbol)
+                news = retry_yfinance_request(lambda: ticker.news)
+                
+                if news:
+                    for article in news[:10]:  # Analyze last 10 news articles
+                        title = article.get('title', '')
+                        summary = article.get('summary', '')
+                        text = f"{title} {summary}"
+                        
+                        # Calculate sentiment using TextBlob as fallback
+                        blob = TextBlob(text)
+                        sentiment_scores.append(blob.sentiment.polarity)
+            except Exception as e2:
+                print(f"Error in fallback sentiment analysis: {str(e2)}")
         
         # Calculate average sentiment
         if sentiment_scores:
@@ -4211,6 +4418,78 @@ def calculate_market_sentiment(symbol: str, lookback_days: int = 30) -> Dict[str
             'sentiment_score': avg_sentiment,
             'sentiment_confidence': sentiment_confidence,
             'sentiment_samples': len(sentiment_scores)
+        }
+    
+    except Exception as e:
+        print(f"Error in calculate_market_sentiment: {str(e)}")
+        return {
+            'sentiment_score': 0.0,
+            'sentiment_confidence': 0.0,
+            'sentiment_samples': 0
+        }
+
+def calculate_web_search_sentiment(symbol: str, num_results: int = 10) -> Dict[str, float]:
+    """
+    Calculate sentiment from web search results using gradio_client.
+    
+    Args:
+        symbol (str): Stock symbol
+        num_results (int): Number of search results to analyze
+    
+    Returns:
+        Dict[str, float]: Web search sentiment metrics
+    """
+    try:
+        sentiment_scores = []
+        
+        # Perform web search
+        try:
+            print(f"Performing web search for sentiment analysis: {symbol}")
+            search_results = search_web(f"{symbol} stock news analysis", "news", num_results)
+            
+            if search_results and isinstance(search_results, list):
+                for result in search_results[:num_results]:
+                    if isinstance(result, dict):
+                        title = result.get('title', '')
+                        description = result.get('description', '')
+                        text = f"{title} {description}"
+                        
+                        if text.strip():
+                            # Analyze sentiment using transformer model
+                            sentiment = sentiment_analyzer(text)[0]
+                            
+                            # Convert sentiment label to score
+                            if sentiment['label'] == 'positive':
+                                score = sentiment['score']
+                            elif sentiment['label'] == 'negative':
+                                score = -sentiment['score']
+                            else:  # neutral
+                                score = 0.0
+                            sentiment_scores.append(score)
+                            
+        except Exception as e:
+            print(f"Error in web search sentiment analysis: {str(e)}")
+        
+        # Calculate average sentiment
+        if sentiment_scores:
+            avg_sentiment = np.mean(sentiment_scores)
+            sentiment_confidence = min(0.9, len(sentiment_scores) / num_results)
+        else:
+            avg_sentiment = 0.0
+            sentiment_confidence = 0.0
+        
+        return {
+            'sentiment_score': avg_sentiment,
+            'sentiment_confidence': sentiment_confidence,
+            'web_samples': len(sentiment_scores)
+        }
+    
+    except Exception as e:
+        print(f"Error in calculate_web_search_sentiment: {str(e)}")
+        return {
+            'sentiment_score': 0.0,
+            'sentiment_confidence': 0.0,
+            'web_samples': 0
         }
     
     except Exception as e:

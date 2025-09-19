@@ -20,6 +20,10 @@ matplotlib
 # Web interface
 gradio>=4.0.0
 
+# News and sentiment analysis
+GoogleNews
+gradio_client
+
 # Advanced features
 hmmlearn>=0.3.0
 textblob>=0.17.1
