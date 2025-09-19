@@ -2262,7 +2262,7 @@ def make_prediction_enhanced(symbol: str, timeframe: str = "1d", prediction_days
             },
             'advanced_uncertainties': advanced_uncertainties,
             'regime_info': regime_info,
-            'sentiment_data': sentiment_data,
+            'sentiment_data': combined_sentiment,
             'market_conditions': market_conditions,
             'covariate_data_available': len(covariate_data) > 0
         }
@@ -3809,6 +3809,7 @@ The **Advanced Stock Prediction System** is a cutting-edge AI-powered platform w
                 enhanced_metrics = {
                     "covariate_data_used": signals.get("covariate_data_available", False),
                     "sentiment_analysis_used": use_sentiment,
+                    "web_search_analysis_used": use_web_search,
                     "advanced_uncertainty_methods": list(signals.get("advanced_uncertainties", {}).keys()),
                     "regime_aware_uncertainty": use_regime_detection,
                     "enhanced_volume_prediction": signals.get("prediction", {}).get("volume") is not None
@@ -3867,7 +3868,7 @@ The **Advanced Stock Prediction System** is a cutting-edge AI-powered platform w
         def daily_analysis(s: str, pd: int, ld: int, st: str, ue: bool, urd: bool, ust: bool,
                           rfr: float, mi: str, cw: float, tw: float, sw: float,
                           rrp: int, usm: bool, smt: str, sww: float, sa: float,
-                          uc: bool, us: bool) -> Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict, Dict, Dict]:
+                          uc: bool, us: bool, uws: bool) -> Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict, Dict, Dict]:
             """
             Process daily timeframe stock analysis with enhanced features.
 
@@ -3957,7 +3958,7 @@ The **Advanced Stock Prediction System** is a cutting-edge AI-powered platform w
                 - Enhanced covariate data includes market indices, sector ETFs, commodities, and currencies
                 - Sentiment analysis provides news sentiment scoring and confidence levels
             """
-            return analyze_stock(s, "1d", pd, ld, st, ue, urd, ust, rfr, mi, cw, tw, sw, rrp, usm, smt, sww, sa, uc, us)
+            return analyze_stock(s, "1d", pd, ld, st, ue, urd, ust, rfr, mi, cw, tw, sw, rrp, usm, smt, sww, sa, uc, us, uws)
 
         daily_predict_btn.click(
             fn=daily_analysis,
@@ -3965,7 +3966,7 @@ The **Advanced Stock Prediction System** is a cutting-edge AI-powered platform w
                    use_ensemble, use_regime_detection, use_stress_testing, risk_free_rate, market_index,
                    chronos_weight, technical_weight, statistical_weight,
                    random_real_points, use_smoothing, smoothing_type, smoothing_window, smoothing_alpha,
-                   use_covariates, use_sentiment],
+                   use_covariates, use_sentiment, use_web_search],
             outputs=[daily_signals, daily_plot, daily_metrics, daily_risk_metrics, daily_sector_metrics,
                     daily_regime_metrics, daily_stress_results, daily_ensemble_metrics, daily_signals_advanced, daily_historical_json, daily_predicted_json]
         )
@@ -3974,7 +3975,7 @@ The **Advanced Stock Prediction System** is a cutting-edge AI-powered platform w
         def hourly_analysis(s: str, pd: int, ld: int, st: str, ue: bool, urd: bool, ust: bool,
                            rfr: float, mi: str, cw: float, tw: float, sw: float,
                            rrp: int, usm: bool, smt: str, sww: float, sa: float,
-                           uc: bool, us: bool) -> Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict, Dict, Dict]:
+                           uc: bool, us: bool, uws: bool) -> Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict, Dict, Dict]:
             """
             Process hourly timeframe stock analysis with enhanced features.
 
@@ -4067,7 +4068,7 @@ The **Advanced Stock Prediction System** is a cutting-edge AI-powered platform w
                 - Enhanced covariate data includes market indices, sector ETFs, commodities, and currencies
                 - Sentiment analysis provides news sentiment scoring and confidence levels
             """
-            return analyze_stock(s, "1h", pd, ld, st, ue, urd, ust, rfr, mi, cw, tw, sw, rrp, usm, smt, sww, sa, uc, us)
+            return analyze_stock(s, "1h", pd, ld, st, ue, urd, ust, rfr, mi, cw, tw, sw, rrp, usm, smt, sww, sa, uc, us, uws)
 
         hourly_predict_btn.click(
             fn=hourly_analysis,
@@ -4075,7 +4076,7 @@ The **Advanced Stock Prediction System** is a cutting-edge AI-powered platform w
                    use_ensemble, use_regime_detection, use_stress_testing, risk_free_rate, market_index,
                    chronos_weight, technical_weight, statistical_weight,
                    random_real_points, use_smoothing, smoothing_type, smoothing_window, smoothing_alpha,
-                   use_covariates, use_sentiment],
+                   use_covariates, use_sentiment, use_web_search],
             outputs=[hourly_signals, hourly_plot, hourly_metrics, hourly_risk_metrics, hourly_sector_metrics,
                     hourly_regime_metrics, hourly_stress_results, hourly_ensemble_metrics, hourly_signals_advanced, hourly_historical_json, hourly_predicted_json]
         )
@@ -4084,7 +4085,7 @@ The **Advanced Stock Prediction System** is a cutting-edge AI-powered platform w
         def min15_analysis(s: str, pd: int, ld: int, st: str, ue: bool, urd: bool, ust: bool,
                           rfr: float, mi: str, cw: float, tw: float, sw: float,
                           rrp: int, usm: bool, smt: str, sww: float, sa: float,
-                          uc: bool, us: bool) -> Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict, Dict, Dict]:
+                          uc: bool, us: bool, uws: bool) -> Tuple[Dict, go.Figure, Dict, Dict, Dict, Dict, Dict, Dict, Dict, Dict, Dict]:
             """
             Process 15-minute timeframe stock analysis with enhanced features.
 
@@ -4174,14 +4175,15 @@ The **Advanced Stock Prediction System** is a cutting-edge AI-powered platform w
                 - Best suited for highly liquid large-cap stocks with tight bid-ask spreads
                 - Smoothing helps reduce prediction noise but may reduce responsiveness to sudden changes
             """
-            return analyze_stock(s, "15m", pd, ld, st, ue, urd, ust, rfr, mi, cw, tw, sw, rrp, usm, smt, sww, sa)
+            return analyze_stock(s, "15m", pd, ld, st, ue, urd, ust, rfr, mi, cw, tw, sw, rrp, usm, smt, sww, sa, uc, us, uws)
 
         min15_predict_btn.click(
             fn=min15_analysis,
             inputs=[min15_symbol, min15_prediction_days, min15_lookback_days, min15_strategy,
                    use_ensemble, use_regime_detection, use_stress_testing, risk_free_rate, market_index,
                    chronos_weight, technical_weight, statistical_weight,
-                   random_real_points, use_smoothing, smoothing_type, smoothing_window, smoothing_alpha],
+                   random_real_points, use_smoothing, smoothing_type, smoothing_window, smoothing_alpha,
+                   use_covariates, use_sentiment, use_web_search],
             outputs=[min15_signals, min15_plot, min15_metrics, min15_risk_metrics, min15_sector_metrics,
                     min15_regime_metrics, min15_stress_results, min15_ensemble_metrics, min15_signals_advanced, min15_historical_json, min15_predicted_json]
         )
